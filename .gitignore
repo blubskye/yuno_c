@@ -1,0 +1,47 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Object files
+*.o
+*.obj
+
+# Executables
+*.exe
+*.out
+yuno_gasai
+
+# Libraries
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Config files with secrets
+config.json
+.env
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Debug files
+*.dSYM/
+core
