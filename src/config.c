@@ -12,11 +12,11 @@
 
 void config_init_defaults(yuno_config_t *config) {
     memset(config, 0, sizeof(yuno_config_t));
-    strcpy(config->default_prefix, ".");
-    strcpy(config->database_path, "yuno.db");
+    strncpy(config->default_prefix, ".", sizeof(config->default_prefix) - 1);
+    strncpy(config->database_path, "yuno.db", sizeof(config->database_path) - 1);
     config->spam_max_warnings = 3;
-    strcpy(config->dm_message, "I'm just a bot :'(. I can't answer to you.");
-    strcpy(config->insufficient_permissions_message, "${author} You don't have permission to do that~");
+    strncpy(config->dm_message, "I'm just a bot :'(. I can't answer to you.", sizeof(config->dm_message) - 1);
+    strncpy(config->insufficient_permissions_message, "${author} You don't have permission to do that~", sizeof(config->insufficient_permissions_message) - 1);
 }
 
 int config_load(yuno_config_t *config, const char *path) {

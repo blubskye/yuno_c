@@ -12,17 +12,22 @@
 
 #define MAX_AUTO_CLEAN_CHANNELS 256
 #define MAX_DELAYS_PER_CYCLE 3
+#define CLEANER_HASH_SIZE 389  /* Prime number > MAX_AUTO_CLEAN_CHANNELS */
 
 typedef struct {
     uint64_t guild_id;
     uint64_t channel_id;
     int delay_count;
     time_t delayed_until;
+    int hash_next;  /* Chain for hash collisions */
+    int in_use;     /* 1 if entry is active */
 } channel_delay_t;
 
 typedef struct {
     channel_delay_t delays[MAX_AUTO_CLEAN_CHANNELS];
+    int hash_table[CLEANER_HASH_SIZE]; /* Hash buckets -> index, -1 = empty */
     int delay_count;
+    int free_head;  /* Head of free list */
     int running;
 } auto_cleaner_t;
 

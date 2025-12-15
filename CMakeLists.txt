@@ -32,6 +32,7 @@ set(SOURCES
     src/commands/fun.c
     src/modules/auto_cleaner.c
     src/modules/spam_filter.c
+    src/modules/terminal.c
 )
 
 # Header files
@@ -44,6 +45,7 @@ set(HEADERS
     include/commands/fun.h
     include/modules/auto_cleaner.h
     include/modules/spam_filter.h
+    include/modules/terminal.h
 )
 
 # Create executable

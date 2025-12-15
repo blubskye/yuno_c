@@ -11,11 +11,32 @@
 #include "config.h"
 #include "database.h"
 
+/* XP Batcher for batching XP updates with hash table */
+#define MAX_PENDING_XP 256
+#define XP_HASH_SIZE 389  /* Prime number larger than MAX_PENDING_XP */
+
+typedef struct {
+    pending_xp_t pending[MAX_PENDING_XP];
+    int hash_table[XP_HASH_SIZE];  /* Hash buckets -> index in pending[], -1 = empty */
+    int hash_next[MAX_PENDING_XP]; /* Chain for hash collisions */
+    int count;
+    int64_t last_flush;
+} xp_batcher_t;
+
+/* Connection state for auto-reconnection */
+typedef struct {
+    int is_connected;
+    int reconnect_count;
+    int64_t last_disconnect;
+} connection_state_t;
+
 typedef struct {
     struct discord *client;
     yuno_config_t config;
     yuno_database_t database;
     int running;
+    xp_batcher_t xp_batcher;
+    connection_state_t connection;
 } yuno_bot_t;
 
 /* Global bot instance (needed for callbacks) */
@@ -39,5 +60,10 @@ int bot_register_commands(yuno_bot_t *bot);
 int bot_is_master_user(yuno_bot_t *bot, uint64_t user_id);
 uint64_t parse_user_mention(const char *mention);
 void format_duration(int64_t seconds, char *buffer, size_t len);
+
+/* XP batching */
+void xp_batcher_init(xp_batcher_t *batcher);
+void xp_batcher_add(yuno_bot_t *bot, uint64_t user_id, uint64_t guild_id, uint64_t channel_id, int xp);
+void xp_batcher_flush(yuno_bot_t *bot);
 
 #endif /* YUNO_BOT_H */

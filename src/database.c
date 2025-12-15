@@ -95,6 +95,52 @@ int db_initialize(yuno_database_t *database) {
     exec_sql(database, "CREATE INDEX IF NOT EXISTS idx_mod_actions_moderator ON mod_actions(moderator_id)");
     exec_sql(database, "CREATE INDEX IF NOT EXISTS idx_user_xp_guild ON user_xp(guild_id)");
 
+    /* Voice XP config table */
+    exec_sql(database,
+        "CREATE TABLE IF NOT EXISTS voice_xp_config ("
+        "guild_id TEXT PRIMARY KEY,"
+        "enabled INTEGER DEFAULT 0,"
+        "xp_per_minute INTEGER DEFAULT 5,"
+        "min_users INTEGER DEFAULT 2,"
+        "ignore_afk INTEGER DEFAULT 1"
+        ")");
+
+    /* Activity log table */
+    exec_sql(database,
+        "CREATE TABLE IF NOT EXISTS activity_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "guild_id TEXT NOT NULL,"
+        "user_id TEXT NOT NULL,"
+        "channel_id TEXT,"
+        "event_type TEXT NOT NULL,"
+        "old_content TEXT,"
+        "new_content TEXT,"
+        "timestamp INTEGER NOT NULL"
+        ")");
+    exec_sql(database, "CREATE INDEX IF NOT EXISTS idx_activity_guild ON activity_log(guild_id)");
+    exec_sql(database, "CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp)");
+
+    /* DM inbox table */
+    exec_sql(database,
+        "CREATE TABLE IF NOT EXISTS dm_inbox ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "user_id TEXT NOT NULL,"
+        "username TEXT,"
+        "content TEXT,"
+        "timestamp INTEGER NOT NULL,"
+        "read_status INTEGER DEFAULT 0"
+        ")");
+    exec_sql(database, "CREATE INDEX IF NOT EXISTS idx_dm_timestamp ON dm_inbox(timestamp)");
+
+    /* Bot-level bans table */
+    exec_sql(database,
+        "CREATE TABLE IF NOT EXISTS bot_bans ("
+        "user_id TEXT PRIMARY KEY,"
+        "banned_by TEXT,"
+        "reason TEXT,"
+        "timestamp INTEGER NOT NULL"
+        ")");
+
     return 0;
 }
 
@@ -513,6 +559,286 @@ int db_reset_spam_warnings(yuno_database_t *database, uint64_t user_id, uint64_t
     sqlite3_bind_text(stmt, 2, guild_str, -1, SQLITE_TRANSIENT);
 
     sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* Voice XP config */
+int db_get_voice_xp_config(yuno_database_t *database, uint64_t guild_id, voice_xp_config_t *config) {
+    sqlite3_stmt *stmt;
+    char guild_str[32];
+
+    snprintf(guild_str, sizeof(guild_str), "%lu", (unsigned long)guild_id);
+
+    config->guild_id = guild_id;
+    config->enabled = 0;
+    config->xp_per_minute = 5;
+    config->min_users = 2;
+    config->ignore_afk = 1;
+
+    const char *sql = "SELECT enabled, xp_per_minute, min_users, ignore_afk FROM voice_xp_config WHERE guild_id = ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, guild_str, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        config->enabled = sqlite3_column_int(stmt, 0);
+        config->xp_per_minute = sqlite3_column_int(stmt, 1);
+        config->min_users = sqlite3_column_int(stmt, 2);
+        config->ignore_afk = sqlite3_column_int(stmt, 3);
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_set_voice_xp_config(yuno_database_t *database, const voice_xp_config_t *config) {
+    sqlite3_stmt *stmt;
+    char guild_str[32];
+
+    snprintf(guild_str, sizeof(guild_str), "%lu", (unsigned long)config->guild_id);
+
+    const char *sql = "INSERT OR REPLACE INTO voice_xp_config (guild_id, enabled, xp_per_minute, min_users, ignore_afk) VALUES (?, ?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, guild_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, config->enabled);
+    sqlite3_bind_int(stmt, 3, config->xp_per_minute);
+    sqlite3_bind_int(stmt, 4, config->min_users);
+    sqlite3_bind_int(stmt, 5, config->ignore_afk);
+
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* Activity logging */
+int db_log_activity(yuno_database_t *database, const activity_log_t *log) {
+    sqlite3_stmt *stmt;
+    char guild_str[32], user_str[32], channel_str[32];
+
+    snprintf(guild_str, sizeof(guild_str), "%lu", (unsigned long)log->guild_id);
+    snprintf(user_str, sizeof(user_str), "%lu", (unsigned long)log->user_id);
+    snprintf(channel_str, sizeof(channel_str), "%lu", (unsigned long)log->channel_id);
+
+    const char *sql = "INSERT INTO activity_log (guild_id, user_id, channel_id, event_type, old_content, new_content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, guild_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, user_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, channel_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, log->event_type, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, log->old_content, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, log->new_content, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 7, log->timestamp);
+
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_get_activity_logs(yuno_database_t *database, uint64_t guild_id, activity_log_t *logs, int max_logs, int *count) {
+    sqlite3_stmt *stmt;
+    char guild_str[32];
+
+    snprintf(guild_str, sizeof(guild_str), "%lu", (unsigned long)guild_id);
+
+    const char *sql = "SELECT id, user_id, channel_id, event_type, old_content, new_content, timestamp FROM activity_log WHERE guild_id = ? ORDER BY timestamp DESC LIMIT ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, guild_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, max_logs);
+
+    *count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && *count < max_logs) {
+        logs[*count].id = sqlite3_column_int64(stmt, 0);
+        logs[*count].guild_id = guild_id;
+        logs[*count].user_id = strtoull((const char *)sqlite3_column_text(stmt, 1), NULL, 10);
+        logs[*count].channel_id = strtoull((const char *)sqlite3_column_text(stmt, 2), NULL, 10);
+        strncpy(logs[*count].event_type, (const char *)sqlite3_column_text(stmt, 3), 31);
+        const char *old = (const char *)sqlite3_column_text(stmt, 4);
+        const char *new = (const char *)sqlite3_column_text(stmt, 5);
+        strncpy(logs[*count].old_content, old ? old : "", 1023);
+        strncpy(logs[*count].new_content, new ? new : "", 1023);
+        logs[*count].timestamp = sqlite3_column_int64(stmt, 6);
+        (*count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* DM inbox */
+int db_save_dm(yuno_database_t *database, const dm_inbox_t *dm) {
+    sqlite3_stmt *stmt;
+    char user_str[32];
+
+    snprintf(user_str, sizeof(user_str), "%lu", (unsigned long)dm->user_id);
+
+    const char *sql = "INSERT INTO dm_inbox (user_id, username, content, timestamp, read_status) VALUES (?, ?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, user_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dm->username, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, dm->content, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, dm->timestamp);
+    sqlite3_bind_int(stmt, 5, dm->read_status);
+
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_get_dms(yuno_database_t *database, dm_inbox_t *dms, int max_dms, int *count) {
+    sqlite3_stmt *stmt;
+
+    const char *sql = "SELECT id, user_id, username, content, timestamp, read_status FROM dm_inbox ORDER BY timestamp DESC LIMIT ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_dms);
+
+    *count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && *count < max_dms) {
+        dms[*count].id = sqlite3_column_int64(stmt, 0);
+        dms[*count].user_id = strtoull((const char *)sqlite3_column_text(stmt, 1), NULL, 10);
+        const char *username = (const char *)sqlite3_column_text(stmt, 2);
+        strncpy(dms[*count].username, username ? username : "", 63);
+        const char *content = (const char *)sqlite3_column_text(stmt, 3);
+        strncpy(dms[*count].content, content ? content : "", 1999);
+        dms[*count].timestamp = sqlite3_column_int64(stmt, 4);
+        dms[*count].read_status = sqlite3_column_int(stmt, 5);
+        (*count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_mark_dm_read(yuno_database_t *database, int64_t dm_id) {
+    sqlite3_stmt *stmt;
+
+    const char *sql = "UPDATE dm_inbox SET read_status = 1 WHERE id = ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, dm_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_get_unread_dm_count(yuno_database_t *database) {
+    sqlite3_stmt *stmt;
+    int count = 0;
+
+    const char *sql = "SELECT COUNT(*) FROM dm_inbox WHERE read_status = 0";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return 0;
+    }
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+/* Bot-level bans */
+int db_add_bot_ban(yuno_database_t *database, const bot_ban_t *ban) {
+    sqlite3_stmt *stmt;
+    char user_str[32], banned_by_str[32];
+
+    snprintf(user_str, sizeof(user_str), "%lu", (unsigned long)ban->user_id);
+    snprintf(banned_by_str, sizeof(banned_by_str), "%lu", (unsigned long)ban->banned_by);
+
+    const char *sql = "INSERT OR REPLACE INTO bot_bans (user_id, banned_by, reason, timestamp) VALUES (?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, user_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, banned_by_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, ban->reason, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, ban->timestamp);
+
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_remove_bot_ban(yuno_database_t *database, uint64_t user_id) {
+    sqlite3_stmt *stmt;
+    char user_str[32];
+
+    snprintf(user_str, sizeof(user_str), "%lu", (unsigned long)user_id);
+
+    const char *sql = "DELETE FROM bot_bans WHERE user_id = ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, user_str, -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+int db_is_bot_banned(yuno_database_t *database, uint64_t user_id) {
+    sqlite3_stmt *stmt;
+    char user_str[32];
+    int banned = 0;
+
+    snprintf(user_str, sizeof(user_str), "%lu", (unsigned long)user_id);
+
+    const char *sql = "SELECT 1 FROM bot_bans WHERE user_id = ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, user_str, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        banned = 1;
+    }
+
+    sqlite3_finalize(stmt);
+    return banned;
+}
+
+int db_get_bot_bans(yuno_database_t *database, bot_ban_t *bans, int max_bans, int *count) {
+    sqlite3_stmt *stmt;
+
+    const char *sql = "SELECT user_id, banned_by, reason, timestamp FROM bot_bans ORDER BY timestamp DESC LIMIT ?";
+    if (sqlite3_prepare_v2(database->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_bans);
+
+    *count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && *count < max_bans) {
+        bans[*count].user_id = strtoull((const char *)sqlite3_column_text(stmt, 0), NULL, 10);
+        bans[*count].banned_by = strtoull((const char *)sqlite3_column_text(stmt, 1), NULL, 10);
+        const char *reason = (const char *)sqlite3_column_text(stmt, 2);
+        strncpy(bans[*count].reason, reason ? reason : "", MAX_REASON_LEN - 1);
+        bans[*count].timestamp = sqlite3_column_int64(stmt, 3);
+        (*count)++;
+    }
+
     sqlite3_finalize(stmt);
     return 0;
 }

@@ -9,8 +9,28 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Hash function for guild+channel - O(1) lookup */
+static inline uint32_t hash_guild_channel(uint64_t guild_id, uint64_t channel_id) {
+    uint64_t h = guild_id ^ (channel_id * 2654435761ULL);
+    return (uint32_t)(h % CLEANER_HASH_SIZE);
+}
+
 int auto_cleaner_init(auto_cleaner_t *cleaner) {
     memset(cleaner, 0, sizeof(auto_cleaner_t));
+
+    /* Initialize hash table buckets to -1 (empty) */
+    for (int i = 0; i < CLEANER_HASH_SIZE; i++) {
+        cleaner->hash_table[i] = -1;
+    }
+
+    /* Initialize free list */
+    for (int i = 0; i < MAX_AUTO_CLEAN_CHANNELS - 1; i++) {
+        cleaner->delays[i].hash_next = i + 1;
+        cleaner->delays[i].in_use = 0;
+    }
+    cleaner->delays[MAX_AUTO_CLEAN_CHANNELS - 1].hash_next = -1;
+    cleaner->free_head = 0;
+
     return 0;
 }
 
@@ -29,54 +49,83 @@ void auto_cleaner_stop(auto_cleaner_t *cleaner) {
     printf("🧹 Auto-cleaner stopped~\n");
 }
 
-static int find_delay_entry(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id) {
-    for (int i = 0; i < cleaner->delay_count; i++) {
-        if (cleaner->delays[i].guild_id == guild_id &&
-            cleaner->delays[i].channel_id == channel_id) {
-            return i;
+/* O(1) lookup using hash table */
+static channel_delay_t *find_delay_entry(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id) {
+    uint32_t bucket = hash_guild_channel(guild_id, channel_id);
+    int idx = cleaner->hash_table[bucket];
+
+    while (idx >= 0) {
+        channel_delay_t *entry = &cleaner->delays[idx];
+        if (entry->in_use && entry->guild_id == guild_id && entry->channel_id == channel_id) {
+            return entry;
         }
+        idx = entry->hash_next;
     }
-    return -1;
+    return NULL;
+}
+
+/* Allocate new entry from free list */
+static channel_delay_t *alloc_delay_entry(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id) {
+    if (cleaner->free_head < 0) {
+        return NULL; /* No space */
+    }
+
+    int idx = cleaner->free_head;
+    channel_delay_t *entry = &cleaner->delays[idx];
+    cleaner->free_head = entry->hash_next;
+
+    /* Initialize entry */
+    entry->guild_id = guild_id;
+    entry->channel_id = channel_id;
+    entry->delay_count = 0;
+    entry->delayed_until = 0;
+    entry->in_use = 1;
+
+    /* Add to hash table */
+    uint32_t bucket = hash_guild_channel(guild_id, channel_id);
+    entry->hash_next = cleaner->hash_table[bucket];
+    cleaner->hash_table[bucket] = idx;
+    cleaner->delay_count++;
+
+    return entry;
 }
 
 int auto_cleaner_delay(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id, int minutes) {
-    int idx = find_delay_entry(cleaner, guild_id, channel_id);
+    channel_delay_t *entry = find_delay_entry(cleaner, guild_id, channel_id);
 
-    if (idx >= 0) {
+    if (entry) {
         /* Check if max delays reached */
-        if (cleaner->delays[idx].delay_count >= MAX_DELAYS_PER_CYCLE) {
+        if (entry->delay_count >= MAX_DELAYS_PER_CYCLE) {
             return -1; /* Max delays reached */
         }
-        cleaner->delays[idx].delay_count++;
-        cleaner->delays[idx].delayed_until = time(NULL) + (minutes * 60);
+        entry->delay_count++;
+        entry->delayed_until = time(NULL) + (minutes * 60);
     } else {
         /* Create new entry */
-        if (cleaner->delay_count >= MAX_AUTO_CLEAN_CHANNELS) {
+        entry = alloc_delay_entry(cleaner, guild_id, channel_id);
+        if (!entry) {
             return -1; /* No space */
         }
-        idx = cleaner->delay_count++;
-        cleaner->delays[idx].guild_id = guild_id;
-        cleaner->delays[idx].channel_id = channel_id;
-        cleaner->delays[idx].delay_count = 1;
-        cleaner->delays[idx].delayed_until = time(NULL) + (minutes * 60);
+        entry->delay_count = 1;
+        entry->delayed_until = time(NULL) + (minutes * 60);
     }
 
     return 0;
 }
 
 int auto_cleaner_get_remaining_delays(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id) {
-    int idx = find_delay_entry(cleaner, guild_id, channel_id);
-    if (idx < 0) {
+    const channel_delay_t *entry = find_delay_entry(cleaner, guild_id, channel_id);
+    if (!entry) {
         return MAX_DELAYS_PER_CYCLE;
     }
-    return MAX_DELAYS_PER_CYCLE - cleaner->delays[idx].delay_count;
+    return MAX_DELAYS_PER_CYCLE - entry->delay_count;
 }
 
 void auto_cleaner_reset_delays(auto_cleaner_t *cleaner, uint64_t guild_id, uint64_t channel_id) {
-    int idx = find_delay_entry(cleaner, guild_id, channel_id);
-    if (idx >= 0) {
-        cleaner->delays[idx].delay_count = 0;
-        cleaner->delays[idx].delayed_until = 0;
+    channel_delay_t *entry = find_delay_entry(cleaner, guild_id, channel_id);
+    if (entry) {
+        entry->delay_count = 0;
+        entry->delayed_until = 0;
     }
 }
 
@@ -96,9 +145,9 @@ void auto_cleaner_check(auto_cleaner_t *cleaner) {
     for (int i = 0; i < count; i++) {
         if (!configs[i].enabled) continue;
 
-        /* Check if delayed */
-        int idx = find_delay_entry(cleaner, configs[i].guild_id, configs[i].channel_id);
-        if (idx >= 0 && cleaner->delays[idx].delayed_until > now) {
+        /* O(1) lookup for delay check */
+        const channel_delay_t *entry = find_delay_entry(cleaner, configs[i].guild_id, configs[i].channel_id);
+        if (entry && entry->delayed_until > now) {
             continue; /* Still delayed */
         }
 
