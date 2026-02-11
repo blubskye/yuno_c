@@ -10,11 +10,13 @@
 #include "commands/fun.h"
 #include "modules/terminal.h"
 #include "modules/spam_filter.h"
+#include "modules/activity_logger.h"
+#include "modules/auto_cleaner.h"
+#include "modules/http_client.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <math.h>
 #include <time.h>
 
 /* Global bot instance for callbacks */
@@ -74,7 +76,11 @@ void xp_batcher_add(yuno_bot_t *bot, uint64_t user_id, uint64_t guild_id, uint64
 
     /* Flush if batch is full or time elapsed */
     if (batcher->count >= MAX_PENDING_XP || (time(NULL) - batcher->last_flush) >= XP_FLUSH_INTERVAL) {
+        /* Also grant voice XP before flushing */
+        voice_tracker_grant_xp(bot);
         xp_batcher_flush(bot);
+        /* Flush activity logs too */
+        activity_logger_flush(bot->client, &bot->database);
     }
 }
 
@@ -90,26 +96,39 @@ void xp_batcher_flush(yuno_bot_t *bot) {
         user_xp_t user_xp;
         db_get_user_xp(&bot->database, p->user_id, p->guild_id, &user_xp);
 
-        /* Add XP */
-        db_add_xp(&bot->database, p->user_id, p->guild_id, p->xp_amount);
+        /* Add XP (per-level model matching JS: xp resets on level-up) */
+        user_xp.xp += p->xp_amount;
+        int leveled_up = 0;
 
-        /* Calculate new level */
-        int64_t new_total = user_xp.xp + p->xp_amount;
-        int new_level = (int)sqrt(new_total / 100.0);
+        /* Check for level up: needed = 5 * level^2 + 50 * level + 100 */
+        int64_t needed = 5 * (int64_t)user_xp.level * user_xp.level
+                       + 50 * user_xp.level + 100;
+        while (user_xp.xp >= needed) {
+            user_xp.xp -= needed;
+            user_xp.level += 1;
+            leveled_up = 1;
+            needed = 5 * (int64_t)user_xp.level * user_xp.level
+                   + 50 * user_xp.level + 100;
+        }
 
-        /* Check for level up */
-        if (new_level > user_xp.level) {
-            db_set_level(&bot->database, p->user_id, p->guild_id, new_level);
+        db_set_xp_data(&bot->database, p->user_id, p->guild_id,
+                        user_xp.xp, user_xp.level);
 
-            /* Send level up message */
-            if (bot->client && p->channel_id != 0) {
-                char level_msg[256];
-                snprintf(level_msg, sizeof(level_msg),
-                    "✨ **Level Up!** ✨\nCongratulations <@%lu>! You've reached level **%d**! 💕",
-                    (unsigned long)p->user_id, new_level);
+        /* Send level up message and auto-assign role */
+        if (leveled_up && bot->client && p->channel_id != 0) {
+            char level_msg[256];
+            snprintf(level_msg, sizeof(level_msg),
+                "✨ **Level Up!** ✨\nCongratulations <@%lu>! You've reached level **%d**! 💕",
+                (unsigned long)p->user_id, user_xp.level);
 
-                struct discord_create_message params = { .content = level_msg };
-                discord_create_message(bot->client, p->channel_id, &params, NULL);
+            struct discord_create_message params = { .content = level_msg };
+            discord_create_message(bot->client, p->channel_id, &params, NULL);
+
+            /* Auto-assign level role if configured */
+            u64snowflake role_id = 0;
+            if (db_get_role_for_level(&bot->database, p->guild_id, user_xp.level, &role_id) == 0) {
+                discord_add_guild_member_role(bot->client, p->guild_id,
+                    p->user_id, role_id, NULL, NULL);
             }
         }
     }
@@ -120,6 +139,73 @@ void xp_batcher_flush(yuno_bot_t *bot) {
         batcher->hash_table[i] = -1;
     }
     batcher->last_flush = time(NULL);
+}
+
+/* Voice tracker implementation */
+void voice_tracker_init(voice_tracker_t *tracker) {
+    memset(tracker, 0, sizeof(voice_tracker_t));
+}
+
+static int voice_tracker_find(voice_tracker_t *tracker, uint64_t user_id, uint64_t guild_id) {
+    for (int i = 0; i < tracker->count; i++) {
+        if (tracker->sessions[i].user_id == user_id &&
+            tracker->sessions[i].guild_id == guild_id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void voice_tracker_join(voice_tracker_t *tracker, uint64_t user_id,
+                                uint64_t guild_id, uint64_t channel_id) {
+    int idx = voice_tracker_find(tracker, user_id, guild_id);
+    if (idx >= 0) {
+        /* Update channel if switching */
+        tracker->sessions[idx].channel_id = channel_id;
+        return;
+    }
+    if (tracker->count >= MAX_VOICE_SESSIONS) return;
+
+    idx = tracker->count++;
+    tracker->sessions[idx].user_id = user_id;
+    tracker->sessions[idx].guild_id = guild_id;
+    tracker->sessions[idx].channel_id = channel_id;
+    tracker->sessions[idx].join_time = time(NULL);
+    tracker->sessions[idx].last_xp_grant = time(NULL);
+}
+
+static void voice_tracker_leave(voice_tracker_t *tracker, uint64_t user_id, uint64_t guild_id) {
+    int idx = voice_tracker_find(tracker, user_id, guild_id);
+    if (idx < 0) return;
+
+    /* Swap with last element */
+    tracker->count--;
+    if (idx < tracker->count) {
+        tracker->sessions[idx] = tracker->sessions[tracker->count];
+    }
+}
+
+void voice_tracker_grant_xp(yuno_bot_t *bot) {
+    voice_tracker_t *tracker = &bot->voice_tracker;
+    int64_t now = time(NULL);
+
+    for (int i = 0; i < tracker->count; i++) {
+        voice_session_t *s = &tracker->sessions[i];
+
+        /* Check if voice XP is enabled for this guild */
+        voice_xp_config_t config;
+        if (db_get_voice_xp_config(&bot->database, s->guild_id, &config) != 0 || !config.enabled)
+            continue;
+
+        /* Check if enough time elapsed since last grant (default: every 60 seconds) */
+        int interval = config.xp_per_minute > 0 ? 60 : 60;
+        if ((now - s->last_xp_grant) < interval) continue;
+
+        /* Grant XP */
+        int xp = config.xp_per_minute > 0 ? config.xp_per_minute : 5;
+        xp_batcher_add(bot, s->user_id, s->guild_id, s->channel_id, xp);
+        s->last_xp_grant = now;
+    }
 }
 
 int bot_init(yuno_bot_t *bot, const yuno_config_t *config) {
@@ -140,8 +226,14 @@ int bot_init(yuno_bot_t *bot, const yuno_config_t *config) {
         return -1;
     }
 
+    /* Record start time for uptime tracking */
+    bot->start_time = time(NULL);
+
     /* Initialize XP batcher */
     xp_batcher_init(&bot->xp_batcher);
+
+    /* Initialize voice tracker */
+    voice_tracker_init(&bot->voice_tracker);
 
     /* Initialize connection state */
     bot->connection.is_connected = 0;
@@ -155,6 +247,15 @@ int bot_init(yuno_bot_t *bot, const yuno_config_t *config) {
     discord_set_on_ready(bot->client, on_ready);
     discord_set_on_message_create(bot->client, on_message_create);
     discord_set_on_interaction_create(bot->client, on_interaction_create);
+    discord_set_on_voice_state_update(bot->client, on_voice_state_update);
+    discord_set_on_guild_member_add(bot->client, on_guild_member_add);
+
+    /* Activity logger events */
+    discord_set_on_message_update(bot->client, on_message_update);
+    discord_set_on_message_delete(bot->client, on_message_delete);
+    discord_set_on_guild_ban_add(bot->client, on_guild_ban_add);
+    discord_set_on_guild_ban_remove(bot->client, on_guild_ban_remove);
+    discord_set_on_guild_member_update(bot->client, on_guild_member_update);
 
     /* Initialize terminal interface */
     terminal_init(bot);
@@ -162,12 +263,32 @@ int bot_init(yuno_bot_t *bot, const yuno_config_t *config) {
     /* Initialize spam filter */
     spam_filter_init(bot);
 
+    /* Initialize activity logger */
+    activity_logger_init();
+    if (config->low_memory_mode) {
+        activity_logger_set_low_memory(1);
+    }
+
+    /* Initialize auto-cleaner */
+    auto_cleaner_init(&bot->auto_cleaner);
+
+    /* Initialize LRU cache */
+    lru_cache_init(&bot->cache);
+
+    /* Initialize HTTP client (libcurl) */
+    http_global_init();
+
     return 0;
 }
 
 void bot_cleanup(yuno_bot_t *bot) {
-    /* Flush any remaining XP */
+    /* Stop auto-cleaner */
+    auto_cleaner_stop(&bot->auto_cleaner);
+    auto_cleaner_cleanup(&bot->auto_cleaner);
+
+    /* Flush any remaining XP and activity logs */
     xp_batcher_flush(bot);
+    activity_logger_flush(bot->client, &bot->database);
 
     /* Stop terminal */
     terminal_stop();
@@ -181,6 +302,10 @@ void bot_cleanup(yuno_bot_t *bot) {
         bot->client = NULL;
     }
     db_close(&bot->database);
+
+    /* Cleanup HTTP client */
+    http_global_cleanup();
+
     g_bot = NULL;
 }
 
@@ -212,8 +337,14 @@ void on_ready(struct discord *client, const struct discord_ready *event) {
     /* Register slash commands */
     bot_register_commands(g_bot);
 
+    /* Restore bot presence from database */
+    bot_restore_presence(g_bot);
+
     /* Start terminal interface */
     terminal_start();
+
+    /* Start auto-cleaner background thread */
+    auto_cleaner_start(&g_bot->auto_cleaner);
 }
 
 /* Command dispatch using hash-based lookup - O(1) average instead of O(n) strcmp chain */
@@ -239,7 +370,7 @@ static inline uint32_t hash_command(const char *name) {
 }
 
 /* Command table - sorted by usage frequency for cache efficiency */
-static const command_entry_t g_commands[] = {
+const command_entry_t g_commands[] = {
     /* High frequency commands first */
     { "xp",         NULL,       cmd_xp_prefix,         cmd_xp },
     { "level",      NULL,       cmd_xp_prefix,         NULL },
@@ -249,6 +380,14 @@ static const command_entry_t g_commands[] = {
     { "leaderboard", "lb",      cmd_leaderboard_prefix, cmd_leaderboard },
     { "top",        NULL,       cmd_leaderboard_prefix, NULL },
     { "8ball",      NULL,       cmd_8ball_prefix,      cmd_8ball },
+    { "quote",      NULL,       cmd_quote_prefix,      cmd_quote },
+    { "praise",     NULL,       cmd_praise_prefix,     cmd_praise },
+    { "scold",      NULL,       cmd_scold_prefix,      cmd_scold },
+    { "anime",      "animoo",   cmd_anime_prefix,      cmd_anime },
+    { "manga",      NULL,       cmd_manga_prefix,      cmd_manga },
+    { "neko",       "nya",      cmd_neko_prefix,       cmd_neko },
+    { "urban",      "ub",       cmd_urban_prefix,      cmd_urban },
+    { "hentai",     "hen",      cmd_hentai_prefix,     cmd_hentai },
 
     /* Moderation commands */
     { "ban",        NULL,       cmd_ban_prefix,        cmd_ban },
@@ -257,16 +396,81 @@ static const command_entry_t g_commands[] = {
     { "timeout",    NULL,       cmd_timeout_prefix,    cmd_timeout },
     { "clean",      NULL,       cmd_clean_prefix,      cmd_clean },
     { "mod-stats",  "modstats", cmd_mod_stats_prefix,  cmd_mod_stats },
+    { "scan-bans",  "scanbans", cmd_scan_bans_prefix, cmd_scan_bans },
+    { "exportbans", NULL,       cmd_export_bans_prefix, cmd_export_bans },
+    { "importbans", NULL,       cmd_import_bans_prefix, cmd_import_bans },
 
     /* Utility commands */
+    { "stats",      "inf",      cmd_stats_prefix,      cmd_stats },
     { "source",     NULL,       cmd_source_prefix,     cmd_source },
     { "prefix",     NULL,       cmd_prefix_prefix,     cmd_prefix },
     { "auto-clean", "autoclean", cmd_auto_clean_prefix, cmd_auto_clean },
     { "delay",      NULL,       cmd_delay_prefix,      cmd_delay },
+
+    /* Admin/master commands */
+    { "bot-ban",    "botban",   cmd_bot_ban_prefix,    cmd_bot_ban },
+    { "bot-unban",  "botunban", cmd_bot_unban_prefix,  cmd_bot_unban },
+    { "bot-banlist","bot-bans", cmd_bot_banlist_prefix, cmd_bot_banlist },
+    { "set-spamfilter", "ssf",  cmd_set_spamfilter_prefix, cmd_set_spamfilter },
+    { "set-experiencecounter", "set-expcounter", cmd_set_xp_prefix, cmd_set_xp },
+
+    /* XP admin commands */
+    { "set-level",  "slvl",     cmd_set_level_prefix,  cmd_set_level },
+    { "fix-xp-data","fixxp",    cmd_fix_xp_prefix,     cmd_fix_xp },
+    { "mass-addxp", "massxp",   cmd_mass_addxp_prefix, cmd_mass_addxp },
+    { "mass-setxp", NULL,       cmd_mass_setxp_prefix, cmd_mass_setxp },
+
+    /* Level-role commands */
+    { "set-levelrolemap", "slrmap", cmd_set_levelrolemap_prefix, cmd_set_levelrolemap },
+    { "sync-levelroles", "syncroles", cmd_sync_levelroles_prefix, cmd_sync_levelroles },
+    { "sync-xp-from-roles", "syncxp", cmd_sync_xp_from_roles_prefix, cmd_sync_xp_from_roles },
+
+    /* Voice XP commands */
+    { "set-vcxp",    NULL,       cmd_set_vcxp_prefix,   cmd_set_vcxp },
+    { "vcxp-status", "vcxp",    cmd_vcxp_status_prefix, cmd_vcxp_status },
+
+    /* Configuration commands */
+    { "set-dm-channel", "setdm", cmd_set_dm_channel_prefix, cmd_set_dm_channel },
+    { "dm-status",  "dmstatus",  cmd_dm_status_prefix,  cmd_dm_status },
+    { "set-joinmessage", "sjm",  cmd_set_joinmessage_prefix, cmd_set_joinmessage },
+    { "set-logchannel", "slc",   cmd_set_logchannel_prefix, cmd_set_logchannel },
+    { "log-status", "logstatus", cmd_log_status_prefix, cmd_log_status },
+    { "set-logsettings", "sls",  cmd_set_logsettings_prefix, cmd_set_logsettings },
+    { "set-invitefilter", "sif", cmd_set_invitefilter_prefix, cmd_set_invitefilter },
+    { "config",     "cfg",      cmd_config_prefix,     cmd_config },
+
+    /* Admin/master commands */
+    { "send",          NULL,       cmd_send_prefix,          cmd_send },
+    { "reply",         NULL,       cmd_reply_dm_prefix,      cmd_reply_dm },
+    { "inbox",         NULL,       cmd_inbox_prefix,         cmd_inbox },
+    { "add-masteruser", NULL,      cmd_add_masteruser_prefix, cmd_add_masteruser },
+    { "debug-error",   NULL,       cmd_debug_error_prefix,   cmd_debug_error },
+    { "init-guild",    NULL,       cmd_init_guild_prefix,    cmd_init_guild },
+
+    /* Error channel logging */
+    { "drop-errors-on", "errch", cmd_drop_errors_on_prefix, cmd_drop_errors_on },
+
+    /* Mention response commands */
+    { "add-mentionresponse", "amr", cmd_add_mentionresponse_prefix, cmd_add_mentionresponse },
+    { "del-mentionresponse", "dmr", cmd_del_mentionresponse_prefix, cmd_del_mentionresponse },
+    { "mentionresponses", "mrs",    cmd_mentionresponses_prefix,    cmd_mentionresponses },
+
+    /* List command */
+    { "list-command", "cmds",       cmd_list_command_prefix,        cmd_list_command },
+
+    /* Ban image commands */
+    { "set-banimage", "sbi",        cmd_set_banimage_prefix,       cmd_set_banimage },
+    { "del-banimage", "dbi",        cmd_del_banimage_prefix,       cmd_del_banimage },
+
+    /* Custom spam rule commands */
+    { "add-spamrule", "asr",        cmd_add_spamrule_prefix,       cmd_add_spamrule },
+    { "del-spamrule", "dsr",        cmd_del_spamrule_prefix,       cmd_del_spamrule },
+    { "spamrules",    "srs",        cmd_spamrules_prefix,          cmd_spamrules },
 };
 
 #define NUM_COMMANDS (sizeof(g_commands) / sizeof(g_commands[0]))
-#define CMD_HASH_SIZE 37  /* Small prime, commands are few */
+const int g_num_commands = sizeof(g_commands) / sizeof(g_commands[0]);
+#define CMD_HASH_SIZE 67  /* Small prime, commands are few */
 
 static int g_cmd_hash_table[CMD_HASH_SIZE];
 static int g_cmd_initialized = 0;
@@ -320,6 +524,15 @@ void on_message_create(struct discord *client, const struct discord_message *msg
     size_t prefix_len;
     size_t content_len;
 
+    /* Watch notification: stream messages to terminal if channel is being watched */
+    if (msg->channel_id && msg->author) {
+        terminal_notify_watch(msg->channel_id,
+                               msg->author->username ? msg->author->username : "Unknown",
+                               msg->content,
+                               msg->attachments ? msg->attachments->size : 0,
+                               msg->embeds ? msg->embeds->size > 0 : 0);
+    }
+
     /* Ignore bots */
     if (msg->author->bot) return;
 
@@ -346,17 +559,66 @@ void on_message_create(struct discord *client, const struct discord_message *msg
             msg->author->username, (unsigned long)msg->author->id,
             msg->content, content_len > 50 ? "..." : "");
 
+        /* Forward DM to configured channels */
+        dm_config_t dm_configs[10];
+        int dm_config_count = 0;
+        db_get_all_dm_configs(&g_bot->database, dm_configs, 10, &dm_config_count);
+
+        if (dm_config_count > 0) {
+            char forward_msg[2200];
+            snprintf(forward_msg, sizeof(forward_msg),
+                "📬 **DM from %s** (`%lu`)\n\n%.*s",
+                msg->author->username, (unsigned long)msg->author->id,
+                (int)(sizeof(forward_msg) - 200), msg->content);
+
+            for (int i = 0; i < dm_config_count; i++) {
+                if (!dm_configs[i].enabled) continue;
+                struct discord_create_message fwd = { .content = forward_msg };
+                discord_create_message(client, dm_configs[i].channel_id, &fwd, NULL);
+            }
+        }
+
         /* Send auto-reply */
         struct discord_create_message params = { .content = g_bot->config.dm_message };
         discord_create_message(client, msg->channel_id, &params, NULL);
         return;
     }
 
-    /* Run spam filter */
+    /* Run spam filter and invite filter */
     guild_settings_t settings;
-    if (db_get_guild_settings(&g_bot->database, msg->guild_id, &settings) == 0 && settings.spam_filter_enabled) {
-        if (spam_filter_handle(g_bot, msg)) {
+    if (db_get_guild_settings(&g_bot->database, msg->guild_id, &settings) == 0) {
+        /* Spam filter */
+        if (settings.spam_filter_enabled && spam_filter_handle(g_bot, msg)) {
             return; /* Message was spam, already handled */
+        }
+        /* Invite link filter - skip master users */
+        if (settings.invite_filter_enabled && !bot_is_master_user(g_bot, msg->author->id)) {
+            if (strstr(msg->content, "discord.gg/") ||
+                strstr(msg->content, "discord.com/invite/") ||
+                strstr(msg->content, "discordapp.com/invite/")) {
+                discord_delete_message(client, msg->channel_id, msg->id, NULL, NULL);
+                char warn_msg[256];
+                snprintf(warn_msg, sizeof(warn_msg),
+                    "<@%lu> Invite links are not allowed here~ 💢",
+                    (unsigned long)msg->author->id);
+                struct discord_create_message warn_params = { .content = warn_msg };
+                discord_create_message(client, msg->channel_id, &warn_params, NULL);
+                return;
+            }
+        }
+    }
+
+    /* Check for mention responses */
+    if (msg->mentions && msg->content) {
+        mention_response_t mr;
+        /* Check each mentioned user for a configured trigger */
+        for (int i = 0; i < msg->mentions->size; i++) {
+            if (db_find_mention_response(&g_bot->database, msg->guild_id,
+                    msg->mentions->array[i].id, msg->content, &mr) == 0) {
+                struct discord_create_message mr_params = { .content = mr.response };
+                discord_create_message(client, msg->channel_id, &mr_params, NULL);
+                break; /* Only respond to first match */
+            }
         }
     }
 
@@ -369,9 +631,7 @@ void on_message_create(struct discord *client, const struct discord_message *msg
         /* Add XP for chatting using batcher */
         guild_settings_t lvl_settings;
         if (db_get_guild_settings(&g_bot->database, msg->guild_id, &lvl_settings) != 0 || lvl_settings.leveling_enabled) {
-            /* Better random distribution */
-            int xp_gain = 15 + (rand() % 11);
-            xp_batcher_add(g_bot, msg->author->id, msg->guild_id, msg->channel_id, xp_gain);
+            xp_batcher_add(g_bot, msg->author->id, msg->guild_id, msg->channel_id, g_bot->config.xp_per_msg);
         }
         return;
     }
@@ -415,6 +675,94 @@ void on_interaction_create(struct discord *client, const struct discord_interact
     slash_cmd_handler_t handler = find_slash_handler(name);
     if (handler) {
         handler(client, interaction);
+    }
+}
+
+void on_voice_state_update(struct discord *client, const struct discord_voice_state *event) {
+    (void)client;
+    if (!event->guild_id) return;
+
+    if (event->channel_id == 0) {
+        /* User left voice */
+        voice_tracker_leave(&g_bot->voice_tracker, event->user_id, event->guild_id);
+    } else {
+        /* User joined or switched channel */
+        voice_tracker_join(&g_bot->voice_tracker, event->user_id, event->guild_id, event->channel_id);
+    }
+}
+
+void on_guild_member_add(struct discord *client, const struct discord_guild_member *member) {
+    if (!member->user || !member->guild_id) return;
+
+    /* Auto-role restoration: restore previously saved roles */
+    uint64_t saved_roles[50];
+    int saved_count = 0;
+    if (db_get_user_roles(&g_bot->database, member->guild_id, member->user->id,
+                           saved_roles, 50, &saved_count) == 0 && saved_count > 0) {
+        for (int i = 0; i < saved_count; i++) {
+            discord_add_guild_member_role(client, member->guild_id,
+                member->user->id, saved_roles[i], NULL, NULL);
+        }
+        printf("✓ Restored %d roles for %s in guild %lu\n",
+            saved_count, member->user->username,
+            (unsigned long)member->guild_id);
+    }
+
+    /* Check for join message */
+    char title[256] = { 0 };
+    char message[1024] = { 0 };
+    if (db_get_join_message(&g_bot->database, member->guild_id, title, sizeof(title),
+                             message, sizeof(message)) != 0 || !message[0]) {
+        return; /* No join message configured */
+    }
+
+    /* Create DM channel */
+    struct discord_create_dm dm_params = { .recipient_id = member->user->id };
+    struct discord_channel dm_channel = { 0 };
+    struct discord_ret_channel ret = { .sync = &dm_channel };
+
+    if (discord_create_dm(client, &dm_params, &ret) != CCORD_OK) {
+        return;
+    }
+
+    /* Build welcome message with user mention */
+    char welcome_msg[2048];
+    snprintf(welcome_msg, sizeof(welcome_msg),
+        "**%s**\n\n%s\n\n💕 *— Yuno*",
+        title, message);
+
+    struct discord_create_message msg_params = { .content = welcome_msg };
+    discord_create_message(client, dm_channel.id, &msg_params, NULL);
+    discord_channel_cleanup(&dm_channel);
+}
+
+void bot_update_presence(yuno_bot_t *bot, const bot_presence_t *presence) {
+    if (!bot->client) return;
+
+    struct discord_presence_update pres = { 0 };
+    pres.status = (char *)presence->status;
+
+    struct discord_activity activity = { 0 };
+    if (presence->text[0]) {
+        activity.name = (char *)presence->text;
+        activity.type = presence->type;
+        if (presence->stream_url[0]) {
+            activity.url = (char *)presence->stream_url;
+        }
+        discord_presence_add_activity(&pres, &activity);
+    }
+
+    discord_update_presence(bot->client, &pres);
+
+    /* Save to database */
+    db_set_bot_presence(&bot->database, presence);
+}
+
+void bot_restore_presence(yuno_bot_t *bot) {
+    bot_presence_t presence;
+    if (db_get_bot_presence(&bot->database, &presence) == 0 && presence.text[0]) {
+        bot_update_presence(bot, &presence);
+        printf("✓ Restored presence: %s\n", presence.text);
     }
 }
 

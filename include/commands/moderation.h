@@ -17,6 +17,11 @@ void cmd_timeout(struct discord *client, const struct discord_interaction *inter
 void cmd_clean(struct discord *client, const struct discord_interaction *interaction);
 void cmd_mod_stats(struct discord *client, const struct discord_interaction *interaction);
 void cmd_scan_bans(struct discord *client, const struct discord_interaction *interaction);
+void cmd_export_bans(struct discord *client, const struct discord_interaction *interaction);
+void cmd_import_bans(struct discord *client, const struct discord_interaction *interaction);
+
+/* Channel clean utility (used by auto-cleaner) */
+u64snowflake clean_channel(struct discord *client, u64snowflake guild_id, u64snowflake channel_id);
 
 /* Prefix command handlers */
 void cmd_ban_prefix(struct discord *client, const struct discord_message *msg, const char *args);
@@ -25,5 +30,22 @@ void cmd_unban_prefix(struct discord *client, const struct discord_message *msg,
 void cmd_timeout_prefix(struct discord *client, const struct discord_message *msg, const char *args);
 void cmd_clean_prefix(struct discord *client, const struct discord_message *msg, const char *args);
 void cmd_mod_stats_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_scan_bans_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_export_bans_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_import_bans_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+
+/* Phase 9.3: Ban Image commands */
+void cmd_set_banimage(struct discord *client, const struct discord_interaction *interaction);
+void cmd_del_banimage(struct discord *client, const struct discord_interaction *interaction);
+void cmd_set_banimage_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_del_banimage_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+
+/* Phase 9.4: Custom Spam Rule commands */
+void cmd_add_spamrule(struct discord *client, const struct discord_interaction *interaction);
+void cmd_del_spamrule(struct discord *client, const struct discord_interaction *interaction);
+void cmd_spamrules(struct discord *client, const struct discord_interaction *interaction);
+void cmd_add_spamrule_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_del_spamrule_prefix(struct discord *client, const struct discord_message *msg, const char *args);
+void cmd_spamrules_prefix(struct discord *client, const struct discord_message *msg, const char *args);
 
 #endif /* YUNO_COMMANDS_MODERATION_H */

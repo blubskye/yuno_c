@@ -4,9 +4,24 @@ project(yuno_gasai VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Optional: SQLCipher for encrypted database
+option(USE_SQLCIPHER "Use SQLCipher for database encryption" OFF)
+
 # Find required packages
 find_package(CURL REQUIRED)
-find_package(SQLite3 REQUIRED)
+if(USE_SQLCIPHER)
+    find_library(SQLCIPHER_LIBRARY NAMES sqlcipher PATHS /usr/local/lib /usr/lib)
+    find_path(SQLCIPHER_INCLUDE_DIR NAMES sqlcipher/sqlite3.h PATHS /usr/local/include /usr/include)
+    if(SQLCIPHER_LIBRARY)
+        message(STATUS "SQLCipher found: ${SQLCIPHER_LIBRARY}")
+    else()
+        message(WARNING "SQLCipher not found, falling back to SQLite3")
+        set(USE_SQLCIPHER OFF)
+    endif()
+endif()
+if(NOT USE_SQLCIPHER)
+    find_package(SQLite3 REQUIRED)
+endif()
 
 # Concord library (assumes installed via system or manually)
 # You may need to adjust these paths based on your Concord installation
@@ -32,7 +47,10 @@ set(SOURCES
     src/commands/fun.c
     src/modules/auto_cleaner.c
     src/modules/spam_filter.c
+    src/modules/activity_logger.c
     src/modules/terminal.c
+    src/modules/http_client.c
+    src/modules/lru_cache.c
 )
 
 # Header files
@@ -45,7 +63,10 @@ set(HEADERS
     include/commands/fun.h
     include/modules/auto_cleaner.h
     include/modules/spam_filter.h
+    include/modules/activity_logger.h
     include/modules/terminal.h
+    include/modules/http_client.h
+    include/modules/lru_cache.h
 )
 
 # Create executable
@@ -59,14 +80,25 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Link libraries
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${CONCORD_LIBRARY}
-    CURL::libcurl
-    SQLite::SQLite3
-    ${JSON_C_LIBRARIES}
-    pthread
-    m
-)
+if(USE_SQLCIPHER)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE YUNO_SQLCIPHER)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${SQLCIPHER_INCLUDE_DIR})
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${CONCORD_LIBRARY}
+        CURL::libcurl
+        ${SQLCIPHER_LIBRARY}
+        ${JSON_C_LIBRARIES}
+        pthread
+    )
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${CONCORD_LIBRARY}
+        CURL::libcurl
+        SQLite::SQLite3
+        ${JSON_C_LIBRARIES}
+        pthread
+    )
+endif()
 
 # Set output directory
 set_target_properties(${PROJECT_NAME} PROPERTIES

@@ -6,8 +6,10 @@
 
 #include "modules/auto_cleaner.h"
 #include "bot.h"
+#include "commands/moderation.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Hash function for guild+channel - O(1) lookup */
 static inline uint32_t hash_guild_channel(uint64_t guild_id, uint64_t channel_id) {
@@ -38,14 +40,29 @@ void auto_cleaner_cleanup(auto_cleaner_t *cleaner) {
     cleaner->running = 0;
 }
 
+/* Forward declaration of timer thread */
+static void *auto_cleaner_timer(void *arg);
+
 int auto_cleaner_start(auto_cleaner_t *cleaner) {
+    if (cleaner->running) return 0;
     cleaner->running = 1;
+
+    if (pthread_create(&cleaner->timer_thread, NULL, auto_cleaner_timer, cleaner) != 0) {
+        cleaner->running = 0;
+        fprintf(stderr, "Failed to start auto-cleaner thread\n");
+        return -1;
+    }
+
     printf("🧹 Auto-cleaner started~\n");
     return 0;
 }
 
 void auto_cleaner_stop(auto_cleaner_t *cleaner) {
+    if (!cleaner->running) return;
     cleaner->running = 0;
+
+    /* Wait for timer thread to finish */
+    pthread_join(cleaner->timer_thread, NULL);
     printf("🧹 Auto-cleaner stopped~\n");
 }
 
@@ -130,7 +147,7 @@ void auto_cleaner_reset_delays(auto_cleaner_t *cleaner, uint64_t guild_id, uint6
 }
 
 void auto_cleaner_check(auto_cleaner_t *cleaner) {
-    if (!cleaner->running) return;
+    if (!cleaner->running || !g_bot || !g_bot->client) return;
 
     time_t now = time(NULL);
 
@@ -151,8 +168,57 @@ void auto_cleaner_check(auto_cleaner_t *cleaner) {
             continue; /* Still delayed */
         }
 
-        /* Would perform cleaning here */
-        /* Reset delays after clean */
-        auto_cleaner_reset_delays(cleaner, configs[i].guild_id, configs[i].channel_id);
+        /* Decrement message_count as remaining time (in minutes) */
+        int remaining = configs[i].message_count;
+
+        if (remaining <= 0) {
+            /* Time to clean */
+            printf("🧹 Auto-cleaning channel %lu in guild %lu\n",
+                (unsigned long)configs[i].channel_id, (unsigned long)configs[i].guild_id);
+
+            u64snowflake new_id = clean_channel(g_bot->client, configs[i].guild_id, configs[i].channel_id);
+            if (new_id != 0) {
+                /* Send completion message in new channel */
+                struct discord_create_message params = {
+                    .content = "🧹 **Auto-clean complete!** Yuno is done cleaning~ 💕"
+                };
+                discord_create_message(g_bot->client, new_id, &params, NULL);
+
+                /* Reset timer: message_count = interval_minutes * 60 (stored as remaining seconds/minutes) */
+                configs[i].channel_id = new_id;
+                configs[i].message_count = configs[i].interval_minutes * 60;
+                db_set_auto_clean_config(&g_bot->database, &configs[i]);
+            }
+
+            /* Reset delays after clean */
+            auto_cleaner_reset_delays(cleaner, configs[i].guild_id, configs[i].channel_id);
+        } else {
+            /* Decrement remaining time by 1 minute */
+            configs[i].message_count = remaining - 1;
+            db_set_auto_clean_config(&g_bot->database, &configs[i]);
+
+            /* Send warning when approaching clean time */
+            int warning_mins = configs[i].warning_minutes > 0 ? configs[i].warning_minutes : 5;
+            if (remaining == warning_mins) {
+                char warn_msg[256];
+                snprintf(warn_msg, sizeof(warn_msg),
+                    "🧹 **Warning:** This channel will be auto-cleaned in %d minutes. Speak now or forever hold your peace~",
+                    warning_mins);
+                struct discord_create_message params = { .content = warn_msg };
+                discord_create_message(g_bot->client, configs[i].channel_id, &params, NULL);
+            }
+        }
     }
+}
+
+/* Background timer thread */
+static void *auto_cleaner_timer(void *arg) {
+    auto_cleaner_t *cleaner = (auto_cleaner_t *)arg;
+
+    while (cleaner->running) {
+        sleep(60); /* Check every minute */
+        if (!cleaner->running) break;
+        auto_cleaner_check(cleaner);
+    }
+    return NULL;
 }

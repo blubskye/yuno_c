@@ -196,7 +196,7 @@ int spam_filter_handle(yuno_bot_t *bot, const struct discord_message *msg) {
     }
 
     /* Delete the spam message */
-    discord_delete_message(bot->client, msg->channel_id, msg->id, NULL);
+    discord_delete_message(bot->client, msg->channel_id, msg->id, NULL, NULL);
 
     /* Add warning to database */
     db_add_spam_warning(&bot->database, msg->author->id, msg->guild_id);
@@ -206,13 +206,10 @@ int spam_filter_handle(yuno_bot_t *bot, const struct discord_message *msg) {
     int max_warnings = bot->config.spam_max_warnings;
     if (warnings >= max_warnings) {
         /* Timeout the user for 10 minutes */
-        time_t timeout_until = time(NULL) + (10 * 60);
-        char iso_timestamp[32];
-        struct tm *tm_info = gmtime(&timeout_until);
-        strftime(iso_timestamp, sizeof(iso_timestamp), "%Y-%m-%dT%H:%M:%SZ", tm_info);
+        uint64_t timeout_until_ms = ((uint64_t)time(NULL) + 600) * 1000ULL;
 
         struct discord_modify_guild_member params = {
-            .communication_disabled_until = iso_timestamp
+            .communication_disabled_until = timeout_until_ms
         };
         discord_modify_guild_member(bot->client, msg->guild_id, msg->author->id, &params, NULL);
 

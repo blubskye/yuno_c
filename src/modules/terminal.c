@@ -5,21 +5,39 @@
  */
 
 #include "modules/terminal.h"
+#include "modules/activity_logger.h"
+#include "modules/lru_cache.h"
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <json-c/json.h>
+#include <errno.h>
 
 static yuno_bot_t *g_terminal_bot = NULL;
 static pthread_t terminal_thread;
 static volatile int terminal_running = 0;
 
+/* Watch system: track active channel watches */
+#define MAX_WATCHES 16
+
+typedef struct {
+    uint64_t channel_id;
+    int active;
+} watch_entry_t;
+
+static watch_entry_t g_watches[MAX_WATCHES];
+static int g_watch_count = 0;
+
 void terminal_init(yuno_bot_t *bot) {
     g_terminal_bot = bot;
+    memset(g_watches, 0, sizeof(g_watches));
 }
 
 void terminal_cleanup(void) {
+    terminal_watch_cleanup();
     g_terminal_bot = NULL;
 }
 
@@ -37,14 +55,18 @@ void terminal_cmd_help(void) {
     printf("\n╔═══════════════════════════════════════════════════════════╗\n");
     printf("║             💕 Yuno Terminal Commands 💕                  ║\n");
     printf("╠═══════════════════════════════════════════════════════════╣\n");
-    printf("║  help          - Show this help message                   ║\n");
-    printf("║  servers       - List all connected servers               ║\n");
-    printf("║  inbox         - View DM inbox                            ║\n");
-    printf("║  botban <id>   - Ban a user from using the bot            ║\n");
-    printf("║  botunban <id> - Unban a user from the bot                ║\n");
-    printf("║  botbanlist    - List all bot-banned users                ║\n");
-    printf("║  status <msg>  - Set bot status message                   ║\n");
-    printf("║  quit/exit     - Shutdown the bot                         ║\n");
+    printf("║  help            - Show this help message                 ║\n");
+    printf("║  servers         - List all connected servers             ║\n");
+    printf("║  inbox           - View DM inbox                          ║\n");
+    printf("║  botban <id>     - Ban a user from using the bot          ║\n");
+    printf("║  botunban <id>   - Unban a user from the bot              ║\n");
+    printf("║  botbanlist      - List all bot-banned users              ║\n");
+    printf("║  status <msg>    - Set bot status message                 ║\n");
+    printf("║  commands        - List all available commands             ║\n");
+    printf("║  watch <channel> - Watch a channel in real-time           ║\n");
+    printf("║  texportbans <id>- Export guild bans to file              ║\n");
+    printf("║  timportbans     - Import bans from file                  ║\n");
+    printf("║  quit/exit       - Shutdown the bot                       ║\n");
     printf("╚═══════════════════════════════════════════════════════════╝\n");
 }
 
@@ -179,14 +201,542 @@ void terminal_cmd_botbanlist(void) {
 
 void terminal_cmd_status(const char *args) {
     if (!args || strlen(args) == 0) {
-        printf("❌ Usage: status <message>\n");
+        /* Show current presence */
+        bot_presence_t presence;
+        if (db_get_bot_presence(&g_terminal_bot->database, &presence) == 0 && presence.text[0]) {
+            const char *type_names[] = { "Playing", "Streaming", "Listening to", "Watching", "Custom", "Competing in" };
+            int type = presence.type < 6 ? presence.type : 0;
+            printf("Current status: %s %s [%s]\n", type_names[type], presence.text, presence.status);
+        } else {
+            printf("No status set. Usage: status [playing|streaming|listening|watching|competing] <message>\n");
+        }
         return;
     }
 
-    /* Note: Setting status in Concord requires specific API calls */
-    printf("✅ Status update requested: %s\n", args);
-    printf("(Actual status update depends on Concord API implementation)\n");
+    /* Parse: [type] <message> */
+    bot_presence_t presence = { .type = 0 };
+    strncpy(presence.status, "online", sizeof(presence.status) - 1);
+
+    char first_word[32] = "";
+    const char *message = args;
+
+    sscanf(args, "%31s", first_word);
+    if (strcmp(first_word, "playing") == 0) {
+        presence.type = 0; message = args + 8;
+    } else if (strcmp(first_word, "streaming") == 0) {
+        presence.type = 1; message = args + 10;
+    } else if (strcmp(first_word, "listening") == 0) {
+        presence.type = 2; message = args + 10;
+    } else if (strcmp(first_word, "watching") == 0) {
+        presence.type = 3; message = args + 9;
+    } else if (strcmp(first_word, "competing") == 0) {
+        presence.type = 5; message = args + 10;
+    }
+
+    while (*message == ' ') message++;
+    strncpy(presence.text, message, sizeof(presence.text) - 1);
+
+    bot_update_presence(g_terminal_bot, &presence);
+    const char *type_names[] = { "Playing", "Streaming", "Listening to", "Watching", "Custom", "Competing in" };
+    int type = presence.type < 6 ? presence.type : 0;
+    printf("✅ Status set: %s %s\n", type_names[type], presence.text);
 }
+
+/* ===== list-commands: show all available commands ===== */
+
+/* External reference to command table from bot.c */
+typedef void (*prefix_cmd_handler_t)(struct discord *, const struct discord_message *, const char *);
+typedef void (*slash_cmd_handler_t)(struct discord *, const struct discord_interaction *);
+
+typedef struct {
+    const char *name;
+    const char *alias;
+    prefix_cmd_handler_t prefix_handler;
+    slash_cmd_handler_t slash_handler;
+} command_entry_t;
+
+extern const command_entry_t g_commands[];
+extern const int g_num_commands;
+
+void terminal_cmd_list_commands(void) {
+    printf("\n╔═══════════════════════════════════════════════════════════╗\n");
+    printf("║            💕 All Available Commands 💕                   ║\n");
+    printf("╠═══════════════════════════════════════════════════════════╣\n");
+
+    printf("\n=== DISCORD COMMANDS (Slash + Prefix) ===\n");
+    int discord_count = 0;
+    for (int i = 0; i < g_num_commands; i++) {
+        if (g_commands[i].slash_handler || g_commands[i].prefix_handler) {
+            printf("  %-24s", g_commands[i].name);
+            if (g_commands[i].alias) {
+                printf(" (alias: %s)", g_commands[i].alias);
+            }
+            if (g_commands[i].slash_handler) {
+                printf(" [slash]");
+            }
+            if (g_commands[i].prefix_handler) {
+                printf(" [prefix]");
+            }
+            printf("\n");
+            discord_count++;
+        }
+    }
+
+    printf("\n=== TERMINAL ONLY COMMANDS ===\n");
+    printf("  %-24s  Show this help message\n", "help");
+    printf("  %-24s  List connected servers\n", "servers");
+    printf("  %-24s  View DM inbox\n", "inbox");
+    printf("  %-24s  Ban user from bot\n", "botban <id>");
+    printf("  %-24s  Unban user from bot\n", "botunban <id>");
+    printf("  %-24s  List bot-banned users\n", "botbanlist");
+    printf("  %-24s  Set bot status\n", "status <msg>");
+    printf("  %-24s  List all commands\n", "commands");
+    printf("  %-24s  Watch channel messages\n", "watch <channel>");
+    printf("  %-24s  Export guild bans\n", "texportbans <guild>");
+    printf("  %-24s  Import guild bans\n", "timportbans <guild> <file>");
+    printf("  %-24s  Shutdown the bot\n", "quit/exit");
+
+    printf("\n── Summary: %d Discord commands, 12 terminal commands ──\n", discord_count);
+}
+
+/* ===== watch: real-time channel message monitoring ===== */
+
+/* Check if a channel is being watched */
+int terminal_is_watching(uint64_t channel_id) {
+    for (int i = 0; i < g_watch_count; i++) {
+        if (g_watches[i].channel_id == channel_id && g_watches[i].active) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Called from on_message_create to display watched messages */
+void terminal_notify_watch(uint64_t channel_id, const char *author, const char *content,
+                            int attachment_count, int has_embed) {
+    if (!terminal_is_watching(channel_id)) return;
+
+    char time_buf[16];
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm);
+
+    /* Truncate to 150 chars */
+    printf("[%s] %s: %.150s%s",
+           time_buf, author,
+           content ? content : "",
+           (content && strlen(content) > 150) ? "..." : "");
+    if (attachment_count > 0) {
+        printf(" [%d file(s)]", attachment_count);
+    }
+    if (has_embed) {
+        printf(" [embed]");
+    }
+    printf("\n");
+    fflush(stdout);
+}
+
+void terminal_cmd_watch(const char *args) {
+    if (!g_terminal_bot || !g_terminal_bot->client) {
+        printf("❌ Bot not connected\n");
+        return;
+    }
+
+    /* No args: show status */
+    if (!args || strlen(args) == 0) {
+        if (g_watch_count == 0) {
+            printf("📺 No active watches\n");
+            printf("Usage: watch <channel-id> | watch stop <channel-id|all>\n");
+            return;
+        }
+        printf("\n=== Active Watches ===\n");
+        for (int i = 0; i < g_watch_count; i++) {
+            if (g_watches[i].active) {
+                printf("  #%lu\n", (unsigned long)g_watches[i].channel_id);
+            }
+        }
+        return;
+    }
+
+    /* Parse args */
+    char args_buf[256];
+    strncpy(args_buf, args, sizeof(args_buf) - 1);
+    args_buf[sizeof(args_buf) - 1] = '\0';
+
+    char *first = strtok(args_buf, " ");
+    char *second = strtok(NULL, " ");
+
+    /* Handle "stop" subcommand */
+    if (strcmp(first, "stop") == 0) {
+        if (!second) {
+            printf("❌ Usage: watch stop <channel-id|all>\n");
+            return;
+        }
+        if (strcmp(second, "all") == 0) {
+            for (int i = 0; i < g_watch_count; i++) {
+                g_watches[i].active = 0;
+            }
+            g_watch_count = 0;
+            printf("✅ Stopped all watches\n");
+            return;
+        }
+        uint64_t ch_id = strtoull(second, NULL, 10);
+        if (ch_id == 0) {
+            printf("❌ Invalid channel ID\n");
+            return;
+        }
+        for (int i = 0; i < g_watch_count; i++) {
+            if (g_watches[i].channel_id == ch_id) {
+                g_watches[i].active = 0;
+                /* Compact */
+                g_watch_count--;
+                if (i < g_watch_count) {
+                    g_watches[i] = g_watches[g_watch_count];
+                }
+                printf("✅ Stopped watching channel %lu\n", (unsigned long)ch_id);
+                return;
+            }
+        }
+        printf("❌ Channel %lu is not being watched\n", (unsigned long)ch_id);
+        return;
+    }
+
+    /* Start watching a channel */
+    uint64_t channel_id = strtoull(first, NULL, 10);
+    if (channel_id == 0) {
+        printf("❌ Invalid channel ID. Usage: watch <channel-id>\n");
+        return;
+    }
+
+    /* Check if already watching */
+    if (terminal_is_watching(channel_id)) {
+        printf("📺 Already watching channel %lu\n", (unsigned long)channel_id);
+        return;
+    }
+
+    if (g_watch_count >= MAX_WATCHES) {
+        printf("❌ Maximum %d watches reached. Stop some first.\n", MAX_WATCHES);
+        return;
+    }
+
+    g_watches[g_watch_count].channel_id = channel_id;
+    g_watches[g_watch_count].active = 1;
+    g_watch_count++;
+
+    printf("=== Now watching channel %lu ===\n", (unsigned long)channel_id);
+    printf("Messages will appear in real-time.\n");
+    printf("Use 'watch stop %lu' to stop watching.\n", (unsigned long)channel_id);
+}
+
+void terminal_watch_cleanup(void) {
+    memset(g_watches, 0, sizeof(g_watches));
+    g_watch_count = 0;
+}
+
+/* ===== texportbans: export guild bans to JSON file ===== */
+
+void terminal_cmd_texportbans(const char *args) {
+    if (!g_terminal_bot || !g_terminal_bot->client) {
+        printf("❌ Bot not connected\n");
+        return;
+    }
+
+    if (!args || strlen(args) == 0) {
+        printf("❌ Usage: texportbans <guild-id> [output-file]\n");
+        return;
+    }
+
+    char args_buf[512];
+    strncpy(args_buf, args, sizeof(args_buf) - 1);
+    args_buf[sizeof(args_buf) - 1] = '\0';
+
+    char *guild_str = strtok(args_buf, " ");
+    char *output_file = strtok(NULL, " ");
+
+    uint64_t guild_id = strtoull(guild_str, NULL, 10);
+    if (guild_id == 0) {
+        printf("❌ Invalid guild ID\n");
+        return;
+    }
+
+    /* Default output file: BANS-<guild_id>.txt */
+    char default_path[128];
+    if (!output_file) {
+        snprintf(default_path, sizeof(default_path), "./data/BANS-%lu.txt",
+                 (unsigned long)guild_id);
+        output_file = default_path;
+    }
+
+    /* Security: prevent path traversal */
+    if (strstr(output_file, "..")) {
+        printf("❌ Invalid file path (path traversal not allowed)\n");
+        return;
+    }
+
+    printf("Exporting bans from guild %lu...\n", (unsigned long)guild_id);
+
+    /* Fetch bans via Discord API using Concord */
+    struct discord_bans ban_result = { 0 };
+    struct discord_ret_bans ret = { .sync = &ban_result };
+
+    CCORDcode code = discord_get_guild_bans(g_terminal_bot->client, guild_id, &ret);
+    if (code != CCORD_OK) {
+        printf("❌ Failed to fetch bans (error: %d). Check bot permissions.\n", code);
+        return;
+    }
+
+    /* Build JSON array of user IDs */
+    struct json_object *arr = json_object_new_array();
+    for (int i = 0; i < ban_result.size; i++) {
+        char id_str[32];
+        snprintf(id_str, sizeof(id_str), "%lu", (unsigned long)ban_result.array[i].user->id);
+        json_object_array_add(arr, json_object_new_string(id_str));
+    }
+
+    int total = ban_result.size;
+
+    /* Write to file */
+    FILE *f = fopen(output_file, "w");
+    if (!f) {
+        printf("❌ Failed to open %s: %s\n", output_file, strerror(errno));
+        json_object_put(arr);
+        discord_bans_cleanup(&ban_result);
+        return;
+    }
+
+    const char *json_str = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PRETTY);
+    fputs(json_str, f);
+    fclose(f);
+
+    json_object_put(arr);
+    discord_bans_cleanup(&ban_result);
+
+    printf("✅ Successfully exported %d bans to %s\n", total, output_file);
+}
+
+/* ===== timportbans: import bans from JSON file ===== */
+
+void terminal_cmd_timportbans(const char *args) {
+    if (!g_terminal_bot || !g_terminal_bot->client) {
+        printf("❌ Bot not connected\n");
+        return;
+    }
+
+    if (!args || strlen(args) == 0) {
+        printf("❌ Usage: timportbans <guild-id> <file-path>\n");
+        return;
+    }
+
+    char args_buf[512];
+    strncpy(args_buf, args, sizeof(args_buf) - 1);
+    args_buf[sizeof(args_buf) - 1] = '\0';
+
+    char *guild_str = strtok(args_buf, " ");
+    char *file_path = strtok(NULL, " ");
+
+    if (!guild_str || !file_path) {
+        printf("❌ Usage: timportbans <guild-id> <file-path>\n");
+        return;
+    }
+
+    uint64_t guild_id = strtoull(guild_str, NULL, 10);
+    if (guild_id == 0) {
+        printf("❌ Invalid guild ID\n");
+        return;
+    }
+
+    /* Security: prevent path traversal */
+    if (strstr(file_path, "..")) {
+        printf("❌ Invalid file path (path traversal not allowed)\n");
+        return;
+    }
+
+    /* Read file */
+    FILE *f = fopen(file_path, "r");
+    if (!f) {
+        printf("❌ Failed to open %s: %s\n", file_path, strerror(errno));
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char *file_data = malloc(file_len + 1);
+    if (!file_data) {
+        printf("❌ Out of memory\n");
+        fclose(f);
+        return;
+    }
+
+    fread(file_data, 1, file_len, f);
+    file_data[file_len] = '\0';
+    fclose(f);
+
+    /* Parse JSON array */
+    struct json_object *arr = json_tokener_parse(file_data);
+    free(file_data);
+
+    if (!arr || !json_object_is_type(arr, json_type_array)) {
+        printf("❌ Invalid JSON format. Expected array of user IDs.\n");
+        if (arr) json_object_put(arr);
+        return;
+    }
+
+    int total = json_object_array_length(arr);
+    printf("Importing %d bans to guild %lu...\n", total, (unsigned long)guild_id);
+    printf("This may take a while due to rate limits.\n\n");
+
+    int banned = 0;
+    int already_banned = 0;
+    int failed = 0;
+
+    for (int i = 0; i < total; i++) {
+        struct json_object *item = json_object_array_get_idx(arr, i);
+        const char *id_str = json_object_get_string(item);
+        uint64_t user_id = strtoull(id_str, NULL, 10);
+        if (user_id == 0) {
+            failed++;
+            continue;
+        }
+
+        /* Progress update every 50 bans */
+        if (i > 0 && i % 50 == 0) {
+            printf("\rProcessing %d/%d (%d%%)...", i, total, (i * 100) / total);
+            fflush(stdout);
+        }
+
+        struct discord_create_guild_ban params = {
+            .delete_message_days = 0
+        };
+
+        CCORDcode code = discord_create_guild_ban(g_terminal_bot->client, guild_id,
+                                                    user_id, &params, NULL);
+        if (code == CCORD_OK) {
+            banned++;
+        } else {
+            /* Could be already banned or other error */
+            already_banned++;
+        }
+    }
+
+    json_object_put(arr);
+
+    printf("\r\n=== Import Complete ===\n");
+    printf("Successfully banned: %d\n", banned);
+    printf("Already banned/failed: %d\n", already_banned);
+    printf("Invalid IDs: %d\n", failed);
+    printf("Total processed: %d\n", total);
+}
+
+/* ===== reload: hot-reload configuration ===== */
+
+void terminal_cmd_reload(void) {
+    if (!g_terminal_bot) {
+        printf("❌ Bot not initialized\n");
+        return;
+    }
+
+    printf("🔄 Reloading configuration...\n");
+
+    /* Save old config for comparison */
+    yuno_config_t old_config;
+    memcpy(&old_config, &g_terminal_bot->config, sizeof(yuno_config_t));
+
+    /* Reload config from file */
+    yuno_config_t new_config;
+    config_init_defaults(&new_config);
+
+    if (config_load(&new_config, "config.json") != 0) {
+        printf("❌ Failed to load config.json\n");
+        return;
+    }
+
+    /* Apply env overrides */
+    config_load_from_env(&new_config);
+
+    /* Preserve token (can't change at runtime) */
+    strncpy(new_config.discord_token, old_config.discord_token, MAX_TOKEN_LEN - 1);
+
+    /* Apply new config */
+    memcpy(&g_terminal_bot->config, &new_config, sizeof(yuno_config_t));
+
+    /* Update low memory mode if changed */
+    if (new_config.low_memory_mode != old_config.low_memory_mode) {
+        activity_logger_set_low_memory(new_config.low_memory_mode);
+    }
+
+    /* Clear cache on config reload */
+    lru_cache_clear(&g_terminal_bot->cache);
+
+    printf("✅ Configuration reloaded!\n");
+
+    /* Show what changed */
+    if (strcmp(old_config.default_prefix, new_config.default_prefix) != 0) {
+        printf("  prefix: %s → %s\n", old_config.default_prefix, new_config.default_prefix);
+    }
+    if (old_config.xp_per_msg != new_config.xp_per_msg) {
+        printf("  xp_per_msg: %d → %d\n", old_config.xp_per_msg, new_config.xp_per_msg);
+    }
+    if (old_config.spam_max_warnings != new_config.spam_max_warnings) {
+        printf("  spam_max_warnings: %d → %d\n", old_config.spam_max_warnings, new_config.spam_max_warnings);
+    }
+    if (old_config.master_user_count != new_config.master_user_count) {
+        printf("  master_users: %d → %d\n", old_config.master_user_count, new_config.master_user_count);
+    }
+    if (old_config.low_memory_mode != new_config.low_memory_mode) {
+        printf("  low_memory_mode: %d → %d\n", old_config.low_memory_mode, new_config.low_memory_mode);
+    }
+}
+
+/* ===== auto-update: check for git updates ===== */
+
+void terminal_cmd_autoupdate(void) {
+    printf("🔄 Checking for updates...\n");
+
+    /* Run git fetch to check remote */
+    FILE *fp = popen("git fetch --dry-run 2>&1", "r");
+    if (!fp) {
+        printf("❌ Failed to run git. Is this a git repository?\n");
+        return;
+    }
+
+    char output[1024] = "";
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        strncat(output, line, sizeof(output) - strlen(output) - 1);
+    }
+    int status = pclose(fp);
+
+    if (status != 0) {
+        printf("❌ git fetch failed: %s\n", output);
+        return;
+    }
+
+    /* Check if there are differences between local and remote */
+    fp = popen("git log HEAD..@{u} --oneline 2>/dev/null", "r");
+    if (!fp) {
+        printf("❌ Failed to check for updates\n");
+        return;
+    }
+
+    int has_updates = 0;
+    char updates[2048] = "";
+    while (fgets(line, sizeof(line), fp)) {
+        has_updates++;
+        strncat(updates, line, sizeof(updates) - strlen(updates) - 1);
+    }
+    pclose(fp);
+
+    if (has_updates == 0) {
+        printf("✅ Already up to date!\n");
+    } else {
+        printf("📦 %d update(s) available:\n%s\n", has_updates, updates);
+        printf("Run 'git pull && cmake --build build' to update.\n");
+    }
+}
+
+/* ===== Terminal main loop ===== */
 
 static void *terminal_loop(void *arg) {
     (void)arg;
@@ -227,6 +777,20 @@ static void *terminal_loop(void *arg) {
             terminal_cmd_botbanlist();
         } else if (strcmp(cmd, "status") == 0) {
             terminal_cmd_status(args);
+        } else if (strcmp(cmd, "commands") == 0 || strcmp(cmd, "cmds") == 0 ||
+                   strcmp(cmd, "list-commands") == 0 || strcmp(cmd, "help-all") == 0) {
+            terminal_cmd_list_commands();
+        } else if (strcmp(cmd, "watch") == 0 || strcmp(cmd, "stream") == 0 ||
+                   strcmp(cmd, "listen") == 0) {
+            terminal_cmd_watch(args);
+        } else if (strcmp(cmd, "texportbans") == 0 || strcmp(cmd, "tebans") == 0) {
+            terminal_cmd_texportbans(args);
+        } else if (strcmp(cmd, "timportbans") == 0 || strcmp(cmd, "tibans") == 0) {
+            terminal_cmd_timportbans(args);
+        } else if (strcmp(cmd, "auto-update") == 0 || strcmp(cmd, "update") == 0) {
+            terminal_cmd_autoupdate();
+        } else if (strcmp(cmd, "reload") == 0) {
+            terminal_cmd_reload();
         } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
             printf("💔 Shutting down...\n");
             bot_stop(g_terminal_bot);

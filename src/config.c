@@ -15,8 +15,10 @@ void config_init_defaults(yuno_config_t *config) {
     strncpy(config->default_prefix, ".", sizeof(config->default_prefix) - 1);
     strncpy(config->database_path, "yuno.db", sizeof(config->database_path) - 1);
     config->spam_max_warnings = 3;
+    config->xp_per_msg = 20;
     strncpy(config->dm_message, "I'm just a bot :'(. I can't answer to you.", sizeof(config->dm_message) - 1);
     strncpy(config->insufficient_permissions_message, "${author} You don't have permission to do that~", sizeof(config->insufficient_permissions_message) - 1);
+    config->low_memory_mode = 0;
 }
 
 int config_load(yuno_config_t *config, const char *path) {
@@ -85,6 +87,12 @@ int config_load(yuno_config_t *config, const char *path) {
         config->spam_max_warnings = json_object_get_int(value);
     }
 
+    /* Parse xp_per_msg */
+    if (json_object_object_get_ex(root, "xp_per_msg", &value)) {
+        config->xp_per_msg = json_object_get_int(value);
+        if (config->xp_per_msg <= 0) config->xp_per_msg = 20;
+    }
+
     /* Parse ban_default_image */
     if (json_object_object_get_ex(root, "ban_default_image", &value)) {
         if (!json_object_is_type(value, json_type_null)) {
@@ -100,6 +108,11 @@ int config_load(yuno_config_t *config, const char *path) {
     /* Parse insufficient_permissions_message */
     if (json_object_object_get_ex(root, "insufficient_permissions_message", &value)) {
         strncpy(config->insufficient_permissions_message, json_object_get_string(value), MAX_MESSAGE_LEN - 1);
+    }
+
+    /* Parse low_memory_mode */
+    if (json_object_object_get_ex(root, "low_memory_mode", &value)) {
+        config->low_memory_mode = json_object_get_boolean(value);
     }
 
     json_object_put(root);
@@ -131,6 +144,12 @@ int config_load_from_env(yuno_config_t *config) {
     if (master) {
         strncpy(config->master_users[0], master, 31);
         config->master_user_count = 1;
+    }
+
+    const char *xp_per_msg = getenv("XP_PER_MSG");
+    if (xp_per_msg) {
+        config->xp_per_msg = atoi(xp_per_msg);
+        if (config->xp_per_msg <= 0) config->xp_per_msg = 20;
     }
 
     const char *dm_msg = getenv("DM_MESSAGE");

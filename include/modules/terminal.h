@@ -23,5 +23,17 @@ void terminal_cmd_botban(const char *args);
 void terminal_cmd_botunban(const char *args);
 void terminal_cmd_botbanlist(void);
 void terminal_cmd_status(const char *args);
+void terminal_cmd_list_commands(void);
+void terminal_cmd_watch(const char *args);
+void terminal_cmd_texportbans(const char *args);
+void terminal_cmd_timportbans(const char *args);
+void terminal_watch_cleanup(void);
+void terminal_cmd_autoupdate(void);
+void terminal_cmd_reload(void);
+
+/* Watch notification - called from message handler */
+int terminal_is_watching(uint64_t channel_id);
+void terminal_notify_watch(uint64_t channel_id, const char *author, const char *content,
+                            int attachment_count, int has_embed);
 
 #endif /* YUNO_TERMINAL_H */

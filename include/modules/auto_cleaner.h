@@ -9,6 +9,10 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <pthread.h>
+
+/* Forward declaration */
+struct discord;
 
 #define MAX_AUTO_CLEAN_CHANNELS 256
 #define MAX_DELAYS_PER_CYCLE 3
@@ -29,6 +33,8 @@ typedef struct {
     int delay_count;
     int free_head;  /* Head of free list */
     int running;
+    pthread_t timer_thread;
+    int64_t last_check;  /* Last time we decremented remaining_time */
 } auto_cleaner_t;
 
 /* Auto cleaner lifecycle */

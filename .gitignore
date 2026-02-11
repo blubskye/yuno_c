@@ -45,3 +45,4 @@ compile_commands.json
 # Debug files
 *.dSYM/
 core
+PARITY_PLAN.md

@@ -22,9 +22,11 @@ typedef struct {
     char master_users[MAX_MASTER_USERS][32];
     int master_user_count;
     int spam_max_warnings;
+    int xp_per_msg;
     char ban_default_image[MAX_PATH_LEN];
     char dm_message[MAX_MESSAGE_LEN];
     char insufficient_permissions_message[MAX_MESSAGE_LEN];
+    int low_memory_mode;
 } yuno_config_t;
 
 /* Load configuration from JSON file */
