@@ -220,9 +220,10 @@ Pre-built binaries are available on the [Releases](https://github.com/blubskye/y
 |----------|-------------|------|
 | Linux | x86_64 (amd64) | `yuno_gasai-linux-amd64.tar.gz` |
 | Linux | aarch64 (arm64) | `yuno_gasai-linux-arm64.tar.gz` |
-| Windows | x64 | `yuno_gasai-windows-x64.zip` |
 
 Download, extract, edit `config.example.json` → `config.json`, and run.
+
+> **Note:** Windows binaries are not available — Concord (dev branch) depends on POSIX APIs (`poll.h`, `pipe()`) with no Windows support upstream.
 
 ### Binary Size Comparison
 
@@ -425,7 +426,7 @@ yuno_c/
 │       ├── spam_filter.c      # Rate limiting & custom rules
 │       └── terminal.c         # CLI interface & terminal commands
 ├── .github/workflows/
-│   └── release.yml            # CI/CD: builds for Linux amd64/arm64 + Windows x64
+│   └── release.yml            # CI/CD: builds for Linux amd64/arm64
 ├── data/                      # Runtime data (quotes, images, bans)
 ├── config.example.json        # Example configuration
 ├── CMakeLists.txt             # Build system
