@@ -127,6 +127,9 @@ else()
     )
 endif()
 
+# Export symbols for backtrace_symbols() to resolve function names in crash traces
+target_link_options(${PROJECT_NAME} PRIVATE -rdynamic)
+
 # Set output directory
 set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin

@@ -23,11 +23,75 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
+#include <execinfo.h>
 #include "bot.h"
 #include "config.h"
 
+#define CRASH_BACKTRACE_MAX 64
+
 static yuno_bot_t bot;
 static volatile int shutdown_count = 0;
+
+static const char *signal_name(int signum) {
+    switch (signum) {
+        case SIGSEGV: return "SIGSEGV (Segmentation fault)";
+        case SIGABRT: return "SIGABRT (Aborted)";
+        case SIGFPE:  return "SIGFPE (Floating point exception)";
+        case SIGBUS:  return "SIGBUS (Bus error)";
+        case SIGILL:  return "SIGILL (Illegal instruction)";
+        default:      return "Unknown signal";
+    }
+}
+
+static void crash_handler(int signum) {
+    /* Prevent recursive crashes */
+    signal(signum, SIG_DFL);
+
+    void *frames[CRASH_BACKTRACE_MAX];
+    int frame_count = backtrace(frames, CRASH_BACKTRACE_MAX);
+    char **symbols = backtrace_symbols(frames, frame_count);
+
+    /* Build timestamp */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
+
+    /* Print to stderr */
+    fprintf(stderr, "\n💀 FATAL CRASH: %s (signal %d)\n", signal_name(signum), signum);
+    fprintf(stderr, "Timestamp: %s\n", timestamp);
+    fprintf(stderr, "Stack trace (%d frames):\n", frame_count);
+    for (int i = 0; i < frame_count; i++) {
+        fprintf(stderr, "  #%d %s\n", i, symbols ? symbols[i] : "???");
+    }
+    fprintf(stderr, "\n");
+
+    /* Write crash dump to file */
+    char crash_path[256];
+    snprintf(crash_path, sizeof(crash_path), "crash_%s.log", timestamp);
+    FILE *crash_file = fopen(crash_path, "w");
+    if (crash_file) {
+        fprintf(crash_file, "Yuno Gasai 2 (C Edition) - Crash Report\n");
+        fprintf(crash_file, "========================================\n\n");
+        fprintf(crash_file, "Signal:    %s (signal %d)\n", signal_name(signum), signum);
+        fprintf(crash_file, "Timestamp: %s\n", timestamp);
+        fprintf(crash_file, "PID:       %d\n\n", (int)getpid());
+        fprintf(crash_file, "Stack trace (%d frames):\n", frame_count);
+        for (int i = 0; i < frame_count; i++) {
+            fprintf(crash_file, "  #%d %s\n", i, symbols ? symbols[i] : "???");
+        }
+        fprintf(crash_file, "\nNote: Compile with -g and run through addr2line for source locations.\n");
+        fprintf(crash_file, "  addr2line -e yuno_gasai -f -C <address>\n");
+        fclose(crash_file);
+        fprintf(stderr, "💀 Crash dump written to: %s\n", crash_path);
+    }
+
+    free(symbols);
+
+    /* Re-raise to get core dump from default handler */
+    raise(signum);
+}
 
 static void signal_handler(int signum) {
     (void)signum;
@@ -65,6 +129,13 @@ int main(int argc, char *argv[]) {
     /* Set up signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    /* Set up crash handlers for stack tracing */
+    signal(SIGSEGV, crash_handler);
+    signal(SIGABRT, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGILL, crash_handler);
 
     /* Initialize config with defaults */
     config_init_defaults(&config);
