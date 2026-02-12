@@ -1,0 +1,170 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux-amd64:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc git libcurl4-openssl-dev \
+            libsqlite3-dev libjson-c-dev
+
+      - name: Build Concord (dev branch)
+        run: |
+          git clone https://github.com/Cogmasters/concord.git /tmp/concord
+          cd /tmp/concord
+          git checkout dev
+          make static
+          sudo make install
+          sudo ldconfig
+
+      - name: Build Yuno
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc"
+          cmake --build build -- -j$(nproc)
+          strip build/bin/yuno_gasai
+
+      - name: Package
+        run: |
+          mkdir -p release
+          cp build/bin/yuno_gasai release/
+          cp config.example.json release/
+          cp LICENSE release/
+          cp README.md release/
+          cd release && tar czf ../yuno_gasai-linux-amd64.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yuno_gasai-linux-amd64
+          path: yuno_gasai-linux-amd64.tar.gz
+
+  build-linux-arm64:
+    name: Linux aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc git libcurl4-openssl-dev \
+            libsqlite3-dev libjson-c-dev
+
+      - name: Build Concord (dev branch)
+        run: |
+          git clone https://github.com/Cogmasters/concord.git /tmp/concord
+          cd /tmp/concord
+          git checkout dev
+          make static
+          sudo make install
+          sudo ldconfig
+
+      - name: Build Yuno
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc"
+          cmake --build build -- -j$(nproc)
+          strip build/bin/yuno_gasai
+
+      - name: Package
+        run: |
+          mkdir -p release
+          cp build/bin/yuno_gasai release/
+          cp config.example.json release/
+          cp LICENSE release/
+          cp README.md release/
+          cd release && tar czf ../yuno_gasai-linux-arm64.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yuno_gasai-linux-arm64
+          path: yuno_gasai-linux-arm64.tar.gz
+
+  build-windows:
+    name: Windows x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-json-c
+            git
+            make
+
+      - name: Build Concord (dev branch)
+        run: |
+          git clone https://github.com/Cogmasters/concord.git /tmp/concord
+          cd /tmp/concord
+          git checkout dev
+          make static
+          make install PREFIX=/ucrt64
+
+      - name: Build Yuno
+        run: |
+          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -- -j$(nproc)
+          strip build/bin/yuno_gasai.exe
+
+      - name: Package
+        run: |
+          mkdir -p release
+          cp build/bin/yuno_gasai.exe release/
+          # Bundle required DLLs
+          ldd build/bin/yuno_gasai.exe | grep ucrt64 | awk '{print $3}' | \
+            xargs -I{} cp {} release/ 2>/dev/null || true
+          cp config.example.json release/
+          cp LICENSE release/
+          cp README.md release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yuno_gasai-windows-x64
+          path: release/
+
+  release:
+    name: Create Release
+    needs: [build-linux-amd64, build-linux-arm64, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package Windows build
+        run: |
+          cd artifacts/yuno_gasai-windows-x64
+          zip -r ../../yuno_gasai-windows-x64.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/yuno_gasai-linux-amd64/yuno_gasai-linux-amd64.tar.gz
+            artifacts/yuno_gasai-linux-arm64/yuno_gasai-linux-arm64.tar.gz
+            yuno_gasai-windows-x64.zip

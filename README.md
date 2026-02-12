@@ -120,13 +120,29 @@ This is the **pure C port** of the original JavaScript version using the [Concor
 ### Performance & Architecture
 - **C11** with no runtime overhead
 - Concord async Discord API (dev branch v3.0.0)
+- Worker threadpool for non-blocking HTTP lookups
+- Async Discord API callbacks (DMs, welcomes)
 - SQLite3 with WAL mode
 - O(1) hash-based command dispatch
 - XP batcher with hash table (batches writes every 10s)
 - LRU cache layer (256 entries, configurable TTL)
-- Background threads: auto-cleaner, terminal, voice XP
+- Concord event-loop timers (auto-cleaner, XP flush)
 - Low memory mode for activity logger
 - Optional SQLCipher database encryption
+
+</td>
+</tr>
+<tr>
+<td colspan="2">
+
+### Crash Handling & Diagnostics
+- **Fatal signal handler** — catches SIGSEGV, SIGABRT, SIGFPE, SIGBUS, SIGILL
+- **Full stack traces** via `backtrace()` / `backtrace_symbols()` printed to stderr
+- **Crash dump files** — automatically written to `crash_<timestamp>.log` with signal info, PID, and full trace
+- **`addr2line` ready** — compile with `-g` for source file and line number resolution
+- **`-rdynamic`** linked by default for human-readable function names in traces
+- **Sanitizer support** — AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer (CMake options)
+- **Graceful shutdown** — escalating Ctrl+C (stop → force exit → kernel kill)
 
 </td>
 </tr>
@@ -184,6 +200,49 @@ cmake --build build
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_SQLCIPHER=ON
 cmake --build build
 ```
+
+**Optional: Build with sanitizers (for development/debugging):**
+```bash
+# AddressSanitizer (memory errors, leaks)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSANITIZE_ADDRESS=ON -DSANITIZE_UNDEFINED=ON
+cmake --build build
+
+# ThreadSanitizer (data races)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSANITIZE_THREAD=ON
+cmake --build build
+```
+
+### Pre-built Binaries
+
+Pre-built binaries are available on the [Releases](https://github.com/blubskye/yuno_c/releases) page for:
+
+| Platform | Architecture | File |
+|----------|-------------|------|
+| Linux | x86_64 (amd64) | `yuno_gasai-linux-amd64.tar.gz` |
+| Linux | aarch64 (arm64) | `yuno_gasai-linux-arm64.tar.gz` |
+| Windows | x64 | `yuno_gasai-windows-x64.zip` |
+
+Download, extract, edit `config.example.json` → `config.json`, and run.
+
+### Binary Size Comparison
+
+Build sizes across optimization levels (GCC 15.2, x86_64 Linux):
+
+| Variant | Raw | Stripped | UPX --best |
+|---------|-----|----------|------------|
+| `-O2` | 972 KiB | 865 KiB | 256 KiB |
+| `-O2 -flto` | 985 KiB | 877 KiB | 258 KiB |
+| `-O3` | 987 KiB | 881 KiB | 262 KiB |
+| `-O3 -flto` | 1004 KiB | 897 KiB | 265 KiB |
+| `-Os` | 937 KiB | 829 KiB | 245 KiB |
+| `-Os -flto` | 937 KiB | 829 KiB | 246 KiB |
+
+**Notes:**
+- **`-Os`** produces the smallest binary at every stage — 245 KiB with UPX
+- **LTO** (Link Time Optimization) adds ~12-17 KiB raw due to extra metadata; marginal benefit at this codebase size
+- **`-O3`** is ~5% larger than `-O2` with no measurable runtime difference (bot is I/O-bound)
+- **UPX** compresses all variants to ~30% of stripped size — ideal for deployment
+- Release builds use `-O2` by default (CMake `Release` profile). Override with `-DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG"`
 
 ### Configuration
 
@@ -365,10 +424,11 @@ yuno_c/
 │       ├── lru_cache.c        # Hash-based LRU with TTL
 │       ├── spam_filter.c      # Rate limiting & custom rules
 │       └── terminal.c         # CLI interface & terminal commands
+├── .github/workflows/
+│   └── release.yml            # CI/CD: builds for Linux amd64/arm64 + Windows x64
 ├── data/                      # Runtime data (quotes, images, bans)
 ├── config.example.json        # Example configuration
 ├── CMakeLists.txt             # Build system
-├── PARITY_PLAN.md             # JS-to-C port tracking
 └── LICENSE                    # AGPL-3.0
 ```
 

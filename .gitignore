@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-*/
 cmake-build-*/
 out/
 
@@ -45,6 +46,7 @@ compile_commands.json
 # Debug files
 *.dSYM/
 core
+crash_*.log
 
 # Text and markdown files (except README)
 *.txt
