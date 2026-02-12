@@ -22,17 +22,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
 #include "bot.h"
 #include "config.h"
 
 static yuno_bot_t bot;
-static volatile int running = 1;
+static volatile int shutdown_count = 0;
 
 static void signal_handler(int signum) {
     (void)signum;
-    printf("\n💔 Yuno is shutting down... goodbye, my love~ 💔\n");
-    running = 0;
-    bot_stop(&bot);
+    shutdown_count++;
+
+    if (shutdown_count == 1) {
+        printf("\n💔 Yuno is shutting down... goodbye, my love~ 💔\n");
+        bot_stop(&bot);
+    } else if (shutdown_count == 2) {
+        printf("\n💔 Forcing shutdown... Yuno didn't want to leave~ 💔\n");
+        _exit(1);
+    }
+
+    /* Third Ctrl+C: reset to default handler so kernel kills us */
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
 }
 
 static void print_banner(void) {

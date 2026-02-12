@@ -1,8 +1,8 @@
 <div align="center">
 
-# 💕 Yuno Gasai 2 (C Edition) 💕
+# Yuno Gasai 2 (C Edition)
 
-### *"I'll protect this server forever... just for you~"* 💗
+### *"I'll protect this server forever... just for you~"*
 
 <img src="https://i.imgur.com/jF8Szfr.png" alt="Yuno Gasai" width="300"/>
 
@@ -10,106 +10,123 @@
 [![C](https://img.shields.io/badge/C-11-ff69b4.svg)](https://en.wikipedia.org/wiki/C11_(C_standard_revision))
 [![Concord](https://img.shields.io/badge/Concord-Discord%20API-ff1493.svg)](https://github.com/Cogmasters/concord)
 
-*A devoted Discord bot for moderation, leveling, and anime~ ♥*
+*A devoted Discord bot for moderation, leveling, and anime~*
 
 ---
 
-### 🔩 Ported to plain C... for the memes 🔩
+### Ported to plain C... for the memes
 
 *Because why not rewrite everything in C?*
 
 ---
 
-### 💘 She loves you... and only you 💘
+### She loves you... and only you
 
 </div>
 
-## 🌸 About
+## About
 
-Yuno is a **yandere-themed Discord bot** combining powerful moderation tools with a leveling system and anime features. She'll keep your server safe from troublemakers... *because no one else is allowed near you~* 💕
+Yuno is a **yandere-themed Discord bot** combining powerful moderation tools with a leveling system, anime API lookups, and server management features. She'll keep your server safe from troublemakers... *because no one else is allowed near you~*
 
-This is the **pure C port** of the original JavaScript version using the [Concord library](https://github.com/Cogmasters/concord). Why C? *Because we can.* 🔩
+This is the **pure C port** of the original JavaScript version using the [Concord library](https://github.com/Cogmasters/concord) (dev branch). Why C? *Because we can.*
 
 ---
 
-## 👑 Credits
-
-*"These are the ones who gave me life~"* 💖
+## Credits
 
 | Contributor | Role |
 |-------------|------|
-| **blubskye** | Project Owner, C Porter & Yuno's #1 Fan 💕🔪 |
-| **Maeeen** (maeeennn@gmail.com) | Original Developer 💝 |
-| **Oxdeception** | Contributor 💗 |
-| **fuzzymanboobs** | Contributor 💗 |
+| **blubskye** | Project Owner, C Porter |
+| **Maeeen** (maeeennn@gmail.com) | Original Developer |
+| **Oxdeception** | Contributor |
+| **fuzzymanboobs** | Contributor |
 
 ---
 
-## 💗 Features
+## Features
 
 <table>
 <tr>
 <td width="50%">
 
-### 🔪 Moderation
-*"Anyone who threatens you... I'll eliminate them~"*
-- ⛔ Ban / Unban / Kick / Timeout
-- 🧹 Channel cleaning & auto-clean
-- 🛡️ Spam filter protection
-- 👑 Mod statistics tracking
-- 📊 Scan & import ban history
+### Moderation
+- Ban / Unban / Kick / Timeout
+- Channel cleaning & scheduled auto-clean
+- Spam filter with custom per-guild rules
+- Invite link filter
+- Mod statistics tracking (per-moderator breakdown)
+- Scan, export & import ban lists
+- Custom ban images per user
 
 </td>
 <td width="50%">
 
-### ✨ Leveling System
-*"Watch me make you stronger, senpai~"*
-- 📊 XP & Level tracking
-- 🎭 Role rewards per level
-- 🏆 Server leaderboards
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🌸 Anime & Fun
-*"Let me show you something cute~"*
-- 🎱 8ball fortune telling
-- 💬 Custom mention responses
-- 📜 Inspirational quotes
-
-</td>
-<td width="50%">
-
-### ⚙️ Configuration
-*"I'll be exactly what you need~"*
-- 🔧 Customizable prefix
-- 🎮 Slash commands + prefix commands
-- 📝 Per-guild settings
-- 🔩 **Bare metal performance** (it's C)
+### Leveling System
+- XP & Level tracking (per message + voice chat XP)
+- Configurable XP per message
+- Automatic role rewards per level (`/set-levelrolemap`)
+- Server leaderboards
+- Admin tools: set-level, mass-addxp, mass-setxp, fix-xp-data
+- Sync XP from existing roles
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
-### 🔩 Why C?
-*"Because I'm not like other bots~"*
-- 🔒 Total control over memory
-- ⚡ No runtime overhead
-- 🚀 As fast as it gets
-- 😎 For the memes (and masochism)
+### Anime & Fun
+- `/anime <name>` - Anime lookup (Jikan API v4)
+- `/manga <name>` - Manga lookup (Jikan API v4)
+- `/neko` - Cat pictures (nekos.life)
+- `/urban <term>` - Urban Dictionary lookup
+- `/hentai` - NSFW content (Rule34, channel-gated)
+- `/8ball` - Fortune telling
+- `/quote` - Yuno Gasai quotes
+- `/praise` / `/scold` - Image reactions
+- Custom mention responses per user
 
 </td>
 <td width="50%">
 
-### ⚡ Performance
-*"Nothing can slow me down~"*
-- 📈 Async with Concord
-- 💨 SQLite3 for data storage
-- 🧠 Manual memory management
-- 🎯 Compiled binary speed
+### Configuration & Admin
+- Customizable prefix per guild
+- Slash commands + prefix commands (O(1) hash dispatch)
+- `/config get/set` - Runtime config management
+- DM forwarding to configured channels
+- Welcome DM messages for new members
+- Activity logging (edits, deletes, bans, role changes)
+- Error channel logging
+- Master user system (config + runtime `/add-masteruser`)
+- Bot-level user bans
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### Terminal Interface
+- Interactive CLI with command prompt
+- DM inbox viewer
+- Bot status management
+- Real-time channel watch (`watch <channel-id>`)
+- Terminal ban export/import (`texportbans`, `timportbans`)
+- Config hot-reload (`reload`)
+- Auto-update check (`auto-update`)
+- Full command listing (`commands`)
+
+</td>
+<td width="50%">
+
+### Performance & Architecture
+- **C11** with no runtime overhead
+- Concord async Discord API (dev branch v3.0.0)
+- SQLite3 with WAL mode
+- O(1) hash-based command dispatch
+- XP batcher with hash table (batches writes every 10s)
+- LRU cache layer (256 entries, configurable TTL)
+- Background threads: auto-cleaner, terminal, voice XP
+- Low memory mode for activity logger
+- Optional SQLCipher database encryption
 
 </td>
 </tr>
@@ -117,21 +134,19 @@ This is the **pure C port** of the original JavaScript version using the [Concor
 
 ---
 
-## 💕 Installation
+## Installation
 
-### 📋 Prerequisites
-
-> *"Let me prepare everything for you~"* 💗
+### Prerequisites
 
 - **CMake** (3.15+)
 - **C11 compiler** (GCC, Clang)
-- **Concord** (Discord API library for C)
+- **Concord** (Discord API library for C, dev branch)
 - **SQLite3**
 - **json-c**
 - **libcurl**
 - **Git**
 
-### 🌸 Installing Dependencies
+### Installing Dependencies
 
 **Fedora/RHEL:**
 ```bash
@@ -143,36 +158,40 @@ sudo dnf install cmake gcc sqlite-devel json-c-devel libcurl-devel
 sudo apt install cmake gcc libsqlite3-dev libjson-c-dev libcurl4-openssl-dev
 ```
 
-**Installing Concord:**
+**Installing Concord (dev branch):**
 ```bash
 git clone https://github.com/Cogmasters/concord.git
 cd concord
-make
+git checkout dev
+make static
 sudo make install
 ```
 
-### 🌸 Build Steps
+### Build Steps
 
 ```bash
-# Clone the repository~ ♥
+# Clone the repository
 git clone https://github.com/blubskye/yuno_c.git
-
-# Enter my world~
 cd yuno_c
 
-# Create build directory
-mkdir build && cd build
-
-# Configure with CMake~
-cmake ..
-
-# Build me!
-cmake --build .
+# Build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
-### 💝 Configuration
+**Optional: Build with SQLCipher encryption:**
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_SQLCIPHER=ON
+cmake --build build
+```
 
-Create a `config.json` file:
+### Configuration
+
+Copy the example config and edit it:
+
+```bash
+cp config.example.json config.json
+```
 
 ```json
 {
@@ -180,111 +199,228 @@ Create a `config.json` file:
     "default_prefix": ".",
     "database_path": "yuno.db",
     "master_users": ["YOUR_USER_ID"],
-    "spam_max_warnings": 3
+    "spam_max_warnings": 3,
+    "xp_per_msg": 20,
+    "ban_default_image": null,
+    "dm_message": "I'm just a bot :'(. I can't answer to you.",
+    "insufficient_permissions_message": "${author} You don't have permission to do that~",
+    "low_memory_mode": false
 }
 ```
 
-Or just set the `DISCORD_TOKEN` environment variable if you're lazy~
+Or set the `DISCORD_TOKEN` environment variable for token-only setup. If using SQLCipher, also set `YUNO_DB_KEY` for the encryption passphrase.
 
-### 🚀 Running
+### Running
 
 ```bash
-# Run from the build directory
-./bin/yuno_gasai
+# Run from the project root
+./build/bin/yuno_gasai
 
 # Or with a custom config path
-./bin/yuno_gasai /path/to/config.json
+./build/bin/yuno_gasai /path/to/config.json
 ```
 
 ---
 
-## 💖 Commands Preview
+## Commands
 
+### Moderation
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/ban <user> [reason]` | | Ban a user from the server |
+| `/kick <user> [reason]` | | Kick a user |
+| `/unban <user>` | | Unban a user |
+| `/timeout <user> <duration>` | | Timeout a user |
+| `/clean` | | Clone & clean channel |
+| `/mod-stats` | `modstats` | View moderation statistics |
+| `/scan-bans` | `scanbans` | Import existing guild bans to database |
+| `/exportbans` | | Export guild bans to JSON file |
+| `/importbans <guild_id>` | | Import bans from file |
+| `/set-banimage <user> <url>` | `sbi` | Set custom ban image |
+| `/del-banimage <user>` | `dbi` | Remove custom ban image |
+
+### Leveling
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/xp` | `level`, `rank` | Check your XP and level |
+| `/leaderboard` | `lb`, `top` | Server XP leaderboard |
+| `/set-level <level> [user]` | `slvl` | Set user level (admin) |
+| `/mass-addxp <amount>` | `massxp` | Add XP to all users |
+| `/mass-setxp <level>` | | Set all users to level |
+| `/fix-xp-data` | `fixxp` | Fix corrupted XP records |
+| `/set-levelrolemap <level> <role>` | `slrmap` | Map level to auto-role |
+| `/sync-levelroles` | `syncroles` | Apply level roles to all users |
+| `/sync-xp-from-roles` | `syncxp` | Set XP based on role membership |
+| `/set-vcxp <on\|off> [xp] [min_users]` | | Configure voice chat XP |
+| `/vcxp-status` | `vcxp` | Show voice XP config |
+| `/set-experiencecounter <on\|off>` | `set-expcounter` | Toggle XP system per guild |
+
+### Fun & Anime
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/8ball <question>` | | Ask the magic 8-ball |
+| `/quote` | | Random Yuno Gasai quote |
+| `/praise <user>` | | Praise someone with an image |
+| `/scold <user>` | | Scold someone with an image |
+| `/anime <name>` | `animoo` | Look up anime (Jikan API) |
+| `/manga <name>` | | Look up manga (Jikan API) |
+| `/neko` | `nya` | Cat pictures |
+| `/urban <term>` | `ub` | Urban Dictionary lookup |
+| `/hentai [tags] [count]` | `hen` | NSFW images (NSFW channels only) |
+
+### Configuration
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/ping` | | Check latency |
+| `/help` | | Show help message |
+| `/source` | | View source code link |
+| `/prefix <new_prefix>` | | Change guild prefix |
+| `/config <get\|set> <key> [value]` | `cfg` | View/edit bot config (master only) |
+| `/stats` | `inf` | Bot stats (uptime, memory, etc.) |
+| `/auto-clean <add\|remove\|list>` | `autoclean` | Manage auto-clean channels |
+| `/delay [channel] [minutes]` | | Delay next auto-clean |
+| `/set-dm-channel <channel>` | `setdm` | Set DM forwarding channel |
+| `/dm-status` | `dmstatus` | Show DM config |
+| `/set-joinmessage <title> \| <msg>` | `sjm` | Set welcome DM |
+| `/set-logchannel <channel> [type]` | `slc` | Set activity log channel |
+| `/log-status` | `logstatus` | Show log channel config |
+| `/set-logsettings <interval> <buffer>` | `sls` | Configure log flush settings |
+| `/set-invitefilter <on\|off>` | `sif` | Toggle invite link filter |
+| `/set-spamfilter <on\|off>` | `ssf` | Toggle spam filter |
+| `/list-command` | `cmds` | List all available commands |
+
+### Admin / Master
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/bot-ban <user> [reason]` | `botban` | Ban user from using the bot |
+| `/bot-unban <user>` | `botunban` | Remove bot-level ban |
+| `/bot-banlist` | `bot-bans` | List bot-banned users |
+| `/add-masteruser <user>` | | Add master user at runtime |
+| `/send <channel> <message>` | | Send message through bot |
+| `/reply <user> <message>` | | Reply to a DM |
+| `/inbox` | | View DM inbox |
+| `/debug-error` | | Trigger test error |
+| `/init-guild` | | Manual guild initialization |
+| `/drop-errors-on <channel>` | `errch` | Set error reporting channel |
+| `/add-spamrule <pattern> [action]` | `asr` | Add custom spam rule |
+| `/del-spamrule <id>` | `dsr` | Remove spam rule |
+| `/spamrules` | `srs` | List custom spam rules |
+| `/add-mentionresponse` | `amr` | Add mention response |
+| `/del-mentionresponse` | `dmr` | Remove mention response |
+| `/mentionresponses` | `mrs` | List mention responses |
+
+### Terminal Commands
 | Command | Description |
 |---------|-------------|
-| `/ping` | *"I'm always here for you~"* 💓 |
-| `/ban` | *"They won't bother you anymore..."* 🔪 |
-| `/kick` | *"Get out!"* 👢 |
-| `/timeout` | *"Think about what you did..."* ⏰ |
-| `/clean` | *"Let me tidy up~"* 🧹 |
-| `/mod-stats` | *"Look at all we've done together~"* 📊 |
-| `/xp` | *"Look how strong you've become!"* ✨ |
-| `/8ball` | *"Let fate decide~"* 🎱 |
-| `/delay` | *"Just a bit longer..."* ⏳ |
-| `/source` | *"See how I was made~"* 📜 |
-
-*Use `/help` to see all available commands!*
+| `help` | Show terminal help |
+| `servers` | List connected servers |
+| `inbox` | View DM inbox |
+| `botban <id> [reason]` | Ban user from bot |
+| `botunban <id>` | Unban user from bot |
+| `botbanlist` | List bot-banned users |
+| `status [type] <msg>` | Set bot presence |
+| `commands` | List all commands |
+| `watch <channel-id>` | Real-time message streaming |
+| `watch stop <id\|all>` | Stop watching |
+| `texportbans <guild> [file]` | Export guild bans to JSON |
+| `timportbans <guild> <file>` | Import bans from JSON |
+| `reload` | Hot-reload config.json |
+| `auto-update` | Check for git updates |
+| `quit` / `exit` | Shutdown |
 
 ---
 
-## 📜 License
+## Project Structure
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** 💕
+```
+yuno_c/
+├── include/
+│   ├── bot.h                  # Core bot struct & lifecycle
+│   ├── config.h               # Configuration types
+│   ├── database.h             # Database types & functions
+│   ├── commands/
+│   │   ├── moderation.h       # Moderation command declarations
+│   │   ├── utility.h          # Utility command declarations
+│   │   └── fun.h              # Fun command declarations
+│   └── modules/
+│       ├── activity_logger.h  # Activity logging with low-memory mode
+│       ├── auto_cleaner.h     # Scheduled channel cleaning
+│       ├── http_client.h      # libcurl HTTP wrapper
+│       ├── lru_cache.h        # LRU cache layer
+│       ├── spam_filter.h      # Spam detection
+│       └── terminal.h         # Interactive CLI
+├── src/
+│   ├── main.c                 # Entry point
+│   ├── bot.c                  # Bot core, event handlers, command dispatch
+│   ├── config.c               # JSON config loader
+│   ├── database.c             # SQLite3 database layer
+│   ├── commands/
+│   │   ├── moderation.c       # Ban, kick, clean, etc.
+│   │   ├── utility.c          # Ping, help, config, XP admin, etc.
+│   │   └── fun.c              # 8ball, anime, neko, urban, etc.
+│   └── modules/
+│       ├── activity_logger.c  # Event buffering & log channel dispatch
+│       ├── auto_cleaner.c     # Background thread for auto-clean
+│       ├── http_client.c      # libcurl GET wrapper
+│       ├── lru_cache.c        # Hash-based LRU with TTL
+│       ├── spam_filter.c      # Rate limiting & custom rules
+│       └── terminal.c         # CLI interface & terminal commands
+├── data/                      # Runtime data (quotes, images, bans)
+├── config.example.json        # Example configuration
+├── CMakeLists.txt             # Build system
+├── PARITY_PLAN.md             # JS-to-C port tracking
+└── LICENSE                    # AGPL-3.0
+```
 
-### 💘 What This Means For You~
+---
 
-*"I want to share everything with you... and everyone else too~"* 💗
+## License
 
-The AGPL-3.0 is a **copyleft license** that ensures this software remains free and open. Here's what you need to know:
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-#### ✅ You CAN:
-- 💕 **Use** this bot for any purpose (personal, commercial, whatever~)
-- 🔧 **Modify** the code to your heart's content
-- 📤 **Distribute** copies to others
-- 🌐 **Run** it as a network service (like a public Discord bot)
+### What This Means
 
-#### 📋 You MUST:
-- 📖 **Keep it open source** - ANY modifications you make must be released under AGPL-3.0
-- 🔗 **Publish your source code** - Your modified source code must be made publicly available
-- 📝 **State changes** - Document what you've modified from the original
-- 💌 **Include license** - Keep the LICENSE file and copyright notices intact
+The AGPL-3.0 is a **copyleft license** that ensures this software remains free and open:
 
-#### 🌐 The Network Clause (This is the important part!):
-*"Even if we're apart... I'll always be connected to you~"* 💗
+**You CAN:**
+- Use this bot for any purpose (personal, commercial, whatever)
+- Modify the code
+- Distribute copies
+- Run it as a network service
 
-Unlike regular GPL, **AGPL has a network provision**. This means:
-- If you modify this code **at all**, you must make your source public
-- Running a modified version as a network service (like a Discord bot) requires source disclosure
-- This applies whether you "distribute" the code or not - network use counts!
-- The `/source` command in this bot helps satisfy this requirement!
+**You MUST:**
+- Keep it open source - any modifications must be released under AGPL-3.0
+- Publish your source code if you modify and deploy it
+- State changes you've made
+- Include the license and copyright notices
 
-#### ❌ You CANNOT:
-- 🚫 Make it closed source or keep modifications private
-- 🚫 Remove the license or copyright notices
-- 🚫 Use a different license for modified versions
-- 🚫 Run modified code without publishing your source
-
-#### 💡 In Simple Terms:
-> *"If you use my code to create something, you must share it with everyone too~ That's only fair, right?"* 💕
-
-This ensures that improvements to the bot benefit the entire community, not just one person. Yuno wants everyone to be happy~ 💗
+**The Network Clause:**
+Unlike regular GPL, AGPL has a network provision. If you modify this code and run it as a Discord bot (or any network service), you must make your source code publicly available. The `/source` command helps satisfy this.
 
 See the [LICENSE](LICENSE) file for the full legal text.
 
 ---
 
-## 🔗 Source Code
-
-*"I have nothing to hide from you~"* 💕
+## Source Code
 
 This bot is **open source** under AGPL-3.0:
-- **🔩 C version**: https://github.com/blubskye/yuno_c
-- **🔧 C++ version**: https://github.com/blubskye/yuno_cpp
-- **🦀 Rust version**: https://github.com/blubskye/yuno_rust
-- **📦 Original JS version**: https://github.com/japaneseenrichmentorganization/Yuno-Gasai-2
+- **C version**: https://github.com/blubskye/yuno_c
+- **C++ version**: https://github.com/blubskye/yuno_cpp
+- **Rust version**: https://github.com/blubskye/yuno_rust
+- **Original JS version**: https://github.com/japaneseenrichmentorganization/Yuno-Gasai-2
 
 ---
 
 <div align="center">
 
-### 💘 *"You'll stay with me forever... right?"* 💘
+### *"You'll stay with me forever... right?"*
 
-**Made with obsessive love** 💗 **and rewritten in C for the memes** 🔩
+**Made with obsessive love** and **rewritten in C for the memes**
 
-*Yuno will always be watching over your server~* 👁️💕
+*Yuno will always be watching over your server~*
 
 ---
 
-⭐ *Star this repo if Yuno has captured your heart~* ⭐
+Star this repo if Yuno has captured your heart~
 
 </div>

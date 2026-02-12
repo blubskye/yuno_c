@@ -13,6 +13,7 @@
 #include <time.h>
 #include <json-c/json.h>
 #include <curl/curl.h>
+#include <concord/discord-worker.h>
 
 static const char *EIGHTBALL_RESPONSES[] = {
     /* Positive */
@@ -322,18 +323,47 @@ static void truncate_text(const char *src, char *dst, size_t max_len) {
     }
 }
 
+/* --- Worker thread context for async HTTP commands --- */
+
+typedef struct {
+    struct discord *client;
+    u64snowflake channel_id;         /* For prefix commands */
+    u64snowflake application_id;     /* For slash commands */
+    char interaction_token[256];     /* For slash commands */
+    int is_slash;                    /* 1 = edit interaction, 0 = send message */
+    char query[512];                 /* Search query / term / tags */
+    int count;                       /* For hentai count */
+    int lewd;                        /* For neko lewd flag */
+} fun_worker_ctx_t;
+
+/* Send result from worker thread — handles both slash and prefix */
+static void worker_send(fun_worker_ctx_t *ctx, const char *content) {
+    if (ctx->is_slash) {
+        struct discord_edit_original_interaction_response edit = {
+            .content = (char *)content
+        };
+        discord_edit_original_interaction_response(ctx->client, ctx->application_id,
+            ctx->interaction_token, &edit, NULL);
+    } else {
+        fun_send_reply(ctx->client, ctx->channel_id, content);
+    }
+}
+
 /* --- Anime Command (Jikan API v4) --- */
 
-static void anime_lookup(struct discord *client, u64snowflake channel_id, const char *query) {
+static void anime_worker(void *data) {
+    fun_worker_ctx_t *ctx = data;
+
     char encoded[512];
-    url_encode(query, encoded, sizeof(encoded));
+    url_encode(ctx->query, encoded, sizeof(encoded));
 
     char url[1024];
     snprintf(url, sizeof(url), "https://api.jikan.moe/v4/anime?q=%s&limit=1", encoded);
 
     http_response_t resp;
     if (http_get(url, &resp) != 0) {
-        fun_send_reply(client, channel_id, "Failed to reach the anime API~ Try again later.");
+        worker_send(ctx, "Failed to reach the anime API~ Try again later.");
+        free(ctx);
         return;
     }
 
@@ -341,7 +371,8 @@ static void anime_lookup(struct discord *client, u64snowflake channel_id, const 
     http_response_free(&resp);
 
     if (!root) {
-        fun_send_reply(client, channel_id, "Failed to parse anime response~");
+        worker_send(ctx, "Failed to parse anime response~");
+        free(ctx);
         return;
     }
 
@@ -350,8 +381,9 @@ static void anime_lookup(struct discord *client, u64snowflake channel_id, const 
         json_object_array_length(data_arr) == 0) {
         json_object_put(root);
         char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No anime results found for `%s`. Did you perhaps mean the `manga` command?", query);
-        fun_send_reply(client, channel_id, msg_buf);
+        snprintf(msg_buf, sizeof(msg_buf), "No anime results found for `%s`~", ctx->query);
+        worker_send(ctx, msg_buf);
+        free(ctx);
         return;
     }
 
@@ -394,121 +426,60 @@ static void anime_lookup(struct discord *client, u64snowflake channel_id, const 
         type, status, ep_str, score, synopsis_trunc,
         image_url[0] ? image_url : "");
 
-    fun_send_reply(client, channel_id, result);
+    worker_send(ctx, result);
     json_object_put(root);
+    free(ctx);
 }
 
 void cmd_anime(struct discord *client, const struct discord_interaction *interaction) {
     const char *query = fun_get_option(interaction, "name");
-    if (!query || strlen(query) == 0) {
+    if (!query || !*query) {
         fun_send_interaction(client, interaction, "Usage: `/anime <name>`~");
         return;
     }
 
-    /* Acknowledge first since API call may be slow */
     struct discord_interaction_response ack = {
         .type = DISCORD_INTERACTION_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
     };
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
-    char encoded[512];
-    url_encode(query, encoded, sizeof(encoded));
-    char url[1024];
-    snprintf(url, sizeof(url), "https://api.jikan.moe/v4/anime?q=%s&limit=1", encoded);
-
-    http_response_t resp;
-    if (http_get(url, &resp) != 0) {
-        struct discord_edit_original_interaction_response edit = {
-            .content = "Failed to reach the anime API~ Try again later."
-        };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *root = json_tokener_parse(resp.data);
-    http_response_free(&resp);
-
-    if (!root) {
-        struct discord_edit_original_interaction_response edit = { .content = "Failed to parse response~" };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *data_arr;
-    if (!json_object_object_get_ex(root, "data", &data_arr) ||
-        json_object_array_length(data_arr) == 0) {
-        json_object_put(root);
-        char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No anime results found for `%s`~", query);
-        struct discord_edit_original_interaction_response edit = { .content = msg_buf };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *item = json_object_array_get_idx(data_arr, 0);
-    struct json_object *tmp;
-
-    const char *title = "", *title_en = "", *type = "Unknown", *status = "Unknown";
-    const char *synopsis = "", *image_url = "";
-    int episodes = 0;
-    double score = 0.0;
-
-    if (json_object_object_get_ex(item, "title", &tmp)) title = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "title_english", &tmp) && tmp) title_en = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "type", &tmp) && tmp) type = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "status", &tmp) && tmp) status = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "synopsis", &tmp) && tmp) synopsis = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "episodes", &tmp) && tmp) episodes = json_object_get_int(tmp);
-    if (json_object_object_get_ex(item, "score", &tmp) && tmp) score = json_object_get_double(tmp);
-
-    struct json_object *images, *jpg;
-    if (json_object_object_get_ex(item, "images", &images) &&
-        json_object_object_get_ex(images, "jpg", &jpg) &&
-        json_object_object_get_ex(jpg, "image_url", &tmp) && tmp) {
-        image_url = json_object_get_string(tmp);
-    }
-
-    char synopsis_trunc[400];
-    truncate_text(synopsis, synopsis_trunc, 350);
-    char ep_str[16];
-    if (episodes > 0) snprintf(ep_str, sizeof(ep_str), "%d", episodes);
-    else strcpy(ep_str, "TBD");
-
-    char result[2048];
-    snprintf(result, sizeof(result),
-        "**%s**%s%s%s\n"
-        "**Type:** %s | **Status:** %s\n"
-        "**Episodes:** %s | **Score:** %.1f\n\n"
-        "%s\n\n%s",
-        title, title_en[0] ? " (" : "", title_en, title_en[0] ? ")" : "",
-        type, status, ep_str, score, synopsis_trunc,
-        image_url[0] ? image_url : "");
-
-    struct discord_edit_original_interaction_response edit = { .content = result };
-    discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-    json_object_put(root);
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    strncpy(ctx->query, query, sizeof(ctx->query) - 1);
+    discord_worker_add(client, anime_worker, ctx);
 }
 
 void cmd_anime_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
-    if (!args || strlen(args) == 0) {
+    if (!args || !*args) {
         fun_send_reply(client, msg->channel_id, "Usage: `anime <name>`~");
         return;
     }
-    anime_lookup(client, msg->channel_id, args);
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->channel_id = msg->channel_id;
+    strncpy(ctx->query, args, sizeof(ctx->query) - 1);
+    discord_worker_add(client, anime_worker, ctx);
 }
 
 /* --- Manga Command (Jikan API v4) --- */
 
-static void manga_lookup(struct discord *client, u64snowflake channel_id, const char *query) {
+static void manga_worker(void *data) {
+    fun_worker_ctx_t *ctx = data;
+
     char encoded[512];
-    url_encode(query, encoded, sizeof(encoded));
+    url_encode(ctx->query, encoded, sizeof(encoded));
 
     char url[1024];
     snprintf(url, sizeof(url), "https://api.jikan.moe/v4/manga?q=%s&limit=1", encoded);
 
     http_response_t resp;
     if (http_get(url, &resp) != 0) {
-        fun_send_reply(client, channel_id, "Failed to reach the manga API~ Try again later.");
+        worker_send(ctx, "Failed to reach the manga API~ Try again later.");
+        free(ctx);
         return;
     }
 
@@ -516,7 +487,8 @@ static void manga_lookup(struct discord *client, u64snowflake channel_id, const 
     http_response_free(&resp);
 
     if (!root) {
-        fun_send_reply(client, channel_id, "Failed to parse manga response~");
+        worker_send(ctx, "Failed to parse manga response~");
+        free(ctx);
         return;
     }
 
@@ -525,8 +497,9 @@ static void manga_lookup(struct discord *client, u64snowflake channel_id, const 
         json_object_array_length(data_arr) == 0) {
         json_object_put(root);
         char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No manga results found for `%s`. Did you perhaps mean the `anime` command?", query);
-        fun_send_reply(client, channel_id, msg_buf);
+        snprintf(msg_buf, sizeof(msg_buf), "No manga results found for `%s`~", ctx->query);
+        worker_send(ctx, msg_buf);
+        free(ctx);
         return;
     }
 
@@ -572,13 +545,14 @@ static void manga_lookup(struct discord *client, u64snowflake channel_id, const 
         type, status, ch_str, vol_str, score, synopsis_trunc,
         image_url[0] ? image_url : "");
 
-    fun_send_reply(client, channel_id, result);
+    worker_send(ctx, result);
     json_object_put(root);
+    free(ctx);
 }
 
 void cmd_manga(struct discord *client, const struct discord_interaction *interaction) {
     const char *query = fun_get_option(interaction, "name");
-    if (!query || strlen(query) == 0) {
+    if (!query || !*query) {
         fun_send_interaction(client, interaction, "Usage: `/manga <name>`~");
         return;
     }
@@ -588,105 +562,41 @@ void cmd_manga(struct discord *client, const struct discord_interaction *interac
     };
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
-    char encoded[512];
-    url_encode(query, encoded, sizeof(encoded));
-    char url[1024];
-    snprintf(url, sizeof(url), "https://api.jikan.moe/v4/manga?q=%s&limit=1", encoded);
-
-    http_response_t resp;
-    if (http_get(url, &resp) != 0) {
-        struct discord_edit_original_interaction_response edit = {
-            .content = "Failed to reach the manga API~ Try again later."
-        };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *root = json_tokener_parse(resp.data);
-    http_response_free(&resp);
-
-    if (!root) {
-        struct discord_edit_original_interaction_response edit = { .content = "Failed to parse response~" };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *data_arr;
-    if (!json_object_object_get_ex(root, "data", &data_arr) ||
-        json_object_array_length(data_arr) == 0) {
-        json_object_put(root);
-        char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No manga results found for `%s`~", query);
-        struct discord_edit_original_interaction_response edit = { .content = msg_buf };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *item = json_object_array_get_idx(data_arr, 0);
-    struct json_object *tmp;
-
-    const char *title = "", *title_en = "", *type = "Unknown", *status = "Unknown";
-    const char *synopsis = "", *image_url = "";
-    int chapters = 0, volumes = 0;
-    double score = 0.0;
-
-    if (json_object_object_get_ex(item, "title", &tmp)) title = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "title_english", &tmp) && tmp) title_en = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "type", &tmp) && tmp) type = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "status", &tmp) && tmp) status = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "synopsis", &tmp) && tmp) synopsis = json_object_get_string(tmp);
-    if (json_object_object_get_ex(item, "chapters", &tmp) && tmp) chapters = json_object_get_int(tmp);
-    if (json_object_object_get_ex(item, "volumes", &tmp) && tmp) volumes = json_object_get_int(tmp);
-    if (json_object_object_get_ex(item, "score", &tmp) && tmp) score = json_object_get_double(tmp);
-
-    struct json_object *images, *jpg;
-    if (json_object_object_get_ex(item, "images", &images) &&
-        json_object_object_get_ex(images, "jpg", &jpg) &&
-        json_object_object_get_ex(jpg, "image_url", &tmp) && tmp) {
-        image_url = json_object_get_string(tmp);
-    }
-
-    char synopsis_trunc[400];
-    truncate_text(synopsis, synopsis_trunc, 350);
-    char ch_str[16], vol_str[16];
-    if (chapters > 0) snprintf(ch_str, sizeof(ch_str), "%d", chapters);
-    else strcpy(ch_str, "TBD");
-    if (volumes > 0) snprintf(vol_str, sizeof(vol_str), "%d", volumes);
-    else strcpy(vol_str, "TBD");
-
-    char result[2048];
-    snprintf(result, sizeof(result),
-        "**%s**%s%s%s\n"
-        "**Type:** %s | **Status:** %s\n"
-        "**Chapters:** %s | **Volumes:** %s | **Score:** %.1f\n\n"
-        "%s\n\n%s",
-        title, title_en[0] ? " (" : "", title_en, title_en[0] ? ")" : "",
-        type, status, ch_str, vol_str, score, synopsis_trunc,
-        image_url[0] ? image_url : "");
-
-    struct discord_edit_original_interaction_response edit = { .content = result };
-    discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-    json_object_put(root);
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    strncpy(ctx->query, query, sizeof(ctx->query) - 1);
+    discord_worker_add(client, manga_worker, ctx);
 }
 
 void cmd_manga_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
-    if (!args || strlen(args) == 0) {
+    if (!args || !*args) {
         fun_send_reply(client, msg->channel_id, "Usage: `manga <name>`~");
         return;
     }
-    manga_lookup(client, msg->channel_id, args);
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->channel_id = msg->channel_id;
+    strncpy(ctx->query, args, sizeof(ctx->query) - 1);
+    discord_worker_add(client, manga_worker, ctx);
 }
 
 /* --- Neko Command (nekos.life API) --- */
 
-static void neko_lookup(struct discord *client, u64snowflake channel_id, int lewd) {
-    const char *url = lewd
+static void neko_worker(void *data) {
+    fun_worker_ctx_t *ctx = data;
+
+    const char *url = ctx->lewd
         ? "https://nekos.life/api/lewd/neko"
         : "https://nekos.life/api/neko";
 
     http_response_t resp;
     if (http_get(url, &resp) != 0) {
-        fun_send_reply(client, channel_id, "Failed to reach nekos.life~ Try again later.");
+        worker_send(ctx, "Failed to reach nekos.life~ Try again later.");
+        free(ctx);
         return;
     }
 
@@ -694,45 +604,65 @@ static void neko_lookup(struct discord *client, u64snowflake channel_id, int lew
     http_response_free(&resp);
 
     if (!root) {
-        fun_send_reply(client, channel_id, "Failed to parse neko response~");
+        worker_send(ctx, "Failed to parse neko response~");
+        free(ctx);
         return;
     }
 
     struct json_object *neko_url;
     if (json_object_object_get_ex(root, "neko", &neko_url)) {
-        fun_send_reply(client, channel_id, json_object_get_string(neko_url));
+        worker_send(ctx, json_object_get_string(neko_url));
     } else {
-        fun_send_reply(client, channel_id, "No neko found~");
+        worker_send(ctx, "No neko found~");
     }
 
     json_object_put(root);
+    free(ctx);
 }
 
 void cmd_neko(struct discord *client, const struct discord_interaction *interaction) {
     const char *type = fun_get_option(interaction, "type");
     int lewd = (type && strcmp(type, "lewd") == 0);
 
-    fun_send_interaction(client, interaction, "Fetching a neko for you~ 💕");
-    neko_lookup(client, interaction->channel_id, lewd);
+    struct discord_interaction_response ack = {
+        .type = DISCORD_INTERACTION_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+    };
+    discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    ctx->lewd = lewd;
+    discord_worker_add(client, neko_worker, ctx);
 }
 
 void cmd_neko_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
     int lewd = (args && (strcmp(args, "lewd") == 0 || strcmp(args, "nsfw") == 0));
-    neko_lookup(client, msg->channel_id, lewd);
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->channel_id = msg->channel_id;
+    ctx->lewd = lewd;
+    discord_worker_add(client, neko_worker, ctx);
 }
 
 /* --- Urban Dictionary Command --- */
 
-static void urban_lookup(struct discord *client, u64snowflake channel_id, const char *term) {
+static void urban_worker(void *data) {
+    fun_worker_ctx_t *ctx = data;
+
     char encoded[512];
-    url_encode(term, encoded, sizeof(encoded));
+    url_encode(ctx->query, encoded, sizeof(encoded));
 
     char url[1024];
     snprintf(url, sizeof(url), "https://api.urbandictionary.com/v0/define?term=%s", encoded);
 
     http_response_t resp;
     if (http_get(url, &resp) != 0) {
-        fun_send_reply(client, channel_id, "Failed to reach Urban Dictionary~ Try again later.");
+        worker_send(ctx, "Failed to reach Urban Dictionary~ Try again later.");
+        free(ctx);
         return;
     }
 
@@ -740,7 +670,8 @@ static void urban_lookup(struct discord *client, u64snowflake channel_id, const 
     http_response_free(&resp);
 
     if (!root) {
-        fun_send_reply(client, channel_id, "Failed to parse Urban Dictionary response~");
+        worker_send(ctx, "Failed to parse Urban Dictionary response~");
+        free(ctx);
         return;
     }
 
@@ -749,15 +680,16 @@ static void urban_lookup(struct discord *client, u64snowflake channel_id, const 
         json_object_array_length(list) == 0) {
         json_object_put(root);
         char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No results found for `%s`~", term);
-        fun_send_reply(client, channel_id, msg_buf);
+        snprintf(msg_buf, sizeof(msg_buf), "No results found for `%s`~", ctx->query);
+        worker_send(ctx, msg_buf);
+        free(ctx);
         return;
     }
 
     struct json_object *entry = json_object_array_get_idx(list, 0);
     struct json_object *tmp;
 
-    const char *word = term, *definition = "", *example = "", *author = "Unknown";
+    const char *word = ctx->query, *definition = "", *example = "", *author = "Unknown";
     int thumbs_up = 0, thumbs_down = 0;
 
     if (json_object_object_get_ex(entry, "word", &tmp)) word = json_object_get_string(tmp);
@@ -782,13 +714,14 @@ static void urban_lookup(struct discord *client, u64snowflake channel_id, const 
         ex_trunc[0] ? "**Example:**\n`" : "", ex_trunc, ex_trunc[0] ? "`\n\n" : "",
         thumbs_up, thumbs_down, author);
 
-    fun_send_reply(client, channel_id, result);
+    worker_send(ctx, result);
     json_object_put(root);
+    free(ctx);
 }
 
 void cmd_urban(struct discord *client, const struct discord_interaction *interaction) {
     const char *term = fun_get_option(interaction, "term");
-    if (!term || strlen(term) == 0) {
+    if (!term || !*term) {
         fun_send_interaction(client, interaction, "Usage: `/urban <term>`~");
         return;
     }
@@ -798,79 +731,26 @@ void cmd_urban(struct discord *client, const struct discord_interaction *interac
     };
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
-    char encoded[512];
-    url_encode(term, encoded, sizeof(encoded));
-    char url[1024];
-    snprintf(url, sizeof(url), "https://api.urbandictionary.com/v0/define?term=%s", encoded);
-
-    http_response_t resp;
-    if (http_get(url, &resp) != 0) {
-        struct discord_edit_original_interaction_response edit = {
-            .content = "Failed to reach Urban Dictionary~ Try again later."
-        };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *root = json_tokener_parse(resp.data);
-    http_response_free(&resp);
-
-    if (!root) {
-        struct discord_edit_original_interaction_response edit = { .content = "Failed to parse response~" };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *list;
-    if (!json_object_object_get_ex(root, "list", &list) ||
-        json_object_array_length(list) == 0) {
-        json_object_put(root);
-        char msg_buf[256];
-        snprintf(msg_buf, sizeof(msg_buf), "No results found for `%s`~", term);
-        struct discord_edit_original_interaction_response edit = { .content = msg_buf };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *entry = json_object_array_get_idx(list, 0);
-    struct json_object *tmp;
-
-    const char *word = term, *definition = "", *example = "", *author = "Unknown";
-    int thumbs_up = 0, thumbs_down = 0;
-
-    if (json_object_object_get_ex(entry, "word", &tmp)) word = json_object_get_string(tmp);
-    if (json_object_object_get_ex(entry, "definition", &tmp)) definition = json_object_get_string(tmp);
-    if (json_object_object_get_ex(entry, "example", &tmp)) example = json_object_get_string(tmp);
-    if (json_object_object_get_ex(entry, "author", &tmp)) author = json_object_get_string(tmp);
-    if (json_object_object_get_ex(entry, "thumbs_up", &tmp)) thumbs_up = json_object_get_int(tmp);
-    if (json_object_object_get_ex(entry, "thumbs_down", &tmp)) thumbs_down = json_object_get_int(tmp);
-
-    char def_trunc[800], ex_trunc[400];
-    truncate_text(definition, def_trunc, 700);
-    truncate_text(example, ex_trunc, 350);
-
-    char result[2048];
-    snprintf(result, sizeof(result),
-        "**%s**\n\n"
-        "**Definition:**\n`%s`\n\n"
-        "%s%s%s"
-        "**Upvotes:** %d | **Downvotes:** %d\n"
-        "*Author: %s*",
-        word, def_trunc,
-        ex_trunc[0] ? "**Example:**\n`" : "", ex_trunc, ex_trunc[0] ? "`\n\n" : "",
-        thumbs_up, thumbs_down, author);
-
-    struct discord_edit_original_interaction_response edit = { .content = result };
-    discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-    json_object_put(root);
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    strncpy(ctx->query, term, sizeof(ctx->query) - 1);
+    discord_worker_add(client, urban_worker, ctx);
 }
 
 void cmd_urban_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
-    if (!args || strlen(args) == 0) {
+    if (!args || !*args) {
         fun_send_reply(client, msg->channel_id, "Usage: `urban <term>`~");
         return;
     }
-    urban_lookup(client, msg->channel_id, args);
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->channel_id = msg->channel_id;
+    strncpy(ctx->query, args, sizeof(ctx->query) - 1);
+    discord_worker_add(client, urban_worker, ctx);
 }
 
 /* --- Hentai Command (Rule34 API) --- */
@@ -895,19 +775,17 @@ static int has_banned_tag(const char *input) {
     return 0;
 }
 
-static void hentai_lookup(struct discord *client, u64snowflake channel_id, const char *tags, int count) {
+static void hentai_worker(void *data) {
+    fun_worker_ctx_t *ctx = data;
+
+    int count = ctx->count;
     if (count < 1) count = 2;
     if (count > 25) count = 25;
 
-    if (tags && has_banned_tag(tags)) {
-        fun_send_reply(client, channel_id, "That is against Discord ToS. I will not search for that~ 💢");
-        return;
-    }
-
     char url[1024];
-    if (tags && strlen(tags) > 0) {
+    if (ctx->query[0]) {
         char encoded[512];
-        url_encode(tags, encoded, sizeof(encoded));
+        url_encode(ctx->query, encoded, sizeof(encoded));
         snprintf(url, sizeof(url),
             "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=100&tags=%s", encoded);
     } else {
@@ -918,7 +796,8 @@ static void hentai_lookup(struct discord *client, u64snowflake channel_id, const
 
     http_response_t resp;
     if (http_get(url, &resp) != 0) {
-        fun_send_reply(client, channel_id, "Failed to reach the API~ Try again later.");
+        worker_send(ctx, "Failed to reach the API~ Try again later.");
+        free(ctx);
         return;
     }
 
@@ -930,8 +809,9 @@ static void hentai_lookup(struct discord *client, u64snowflake channel_id, const
         if (root) json_object_put(root);
         char msg_buf[256];
         snprintf(msg_buf, sizeof(msg_buf), "No results found%s%s%s~",
-            tags ? " for `" : "", tags ? tags : "", tags ? "`" : "");
-        fun_send_reply(client, channel_id, msg_buf);
+            ctx->query[0] ? " for `" : "", ctx->query[0] ? ctx->query : "", ctx->query[0] ? "`" : "");
+        worker_send(ctx, msg_buf);
+        free(ctx);
         return;
     }
 
@@ -954,13 +834,9 @@ static void hentai_lookup(struct discord *client, u64snowflake channel_id, const
         }
     }
 
-    if (pos > 0) {
-        fun_send_reply(client, channel_id, result);
-    } else {
-        fun_send_reply(client, channel_id, "No images found~");
-    }
-
+    worker_send(ctx, pos > 0 ? result : "No images found~");
     json_object_put(root);
+    free(ctx);
 }
 
 void cmd_hentai(struct discord *client, const struct discord_interaction *interaction) {
@@ -981,63 +857,14 @@ void cmd_hentai(struct discord *client, const struct discord_interaction *intera
         return;
     }
 
-    if (count < 1) count = 2;
-    if (count > 25) count = 25;
-
-    char url[1024];
-    if (tags && strlen(tags) > 0) {
-        char encoded[512];
-        url_encode(tags, encoded, sizeof(encoded));
-        snprintf(url, sizeof(url),
-            "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=100&tags=%s", encoded);
-    } else {
-        int page = rand() % 2000;
-        snprintf(url, sizeof(url),
-            "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=%d", page);
-    }
-
-    http_response_t resp;
-    if (http_get(url, &resp) != 0) {
-        struct discord_edit_original_interaction_response edit = {
-            .content = "Failed to reach the API~ Try again later."
-        };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    struct json_object *root = json_tokener_parse(resp.data);
-    http_response_free(&resp);
-
-    if (!root || json_object_get_type(root) != json_type_array ||
-        json_object_array_length(root) == 0) {
-        if (root) json_object_put(root);
-        struct discord_edit_original_interaction_response edit = {
-            .content = "No results found~"
-        };
-        discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-        return;
-    }
-
-    int arr_len = json_object_array_length(root);
-    char result[4000];
-    int pos = 0;
-
-    for (int i = 0; i < count && pos < (int)sizeof(result) - 200; i++) {
-        int idx = rand() % arr_len;
-        struct json_object *item = json_object_array_get_idx(root, idx);
-        struct json_object *tmp;
-        const char *file_url = NULL;
-        if (json_object_object_get_ex(item, "file_url", &tmp) && tmp)
-            file_url = json_object_get_string(tmp);
-        if (file_url)
-            pos += snprintf(result + pos, sizeof(result) - pos, "%s\n", file_url);
-    }
-
-    struct discord_edit_original_interaction_response edit = {
-        .content = pos > 0 ? result : "No images found~"
-    };
-    discord_edit_original_interaction_response(client, interaction->application_id, interaction->token, &edit, NULL);
-    json_object_put(root);
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    ctx->count = count;
+    if (tags) strncpy(ctx->query, tags, sizeof(ctx->query) - 1);
+    discord_worker_add(client, hentai_worker, ctx);
 }
 
 void cmd_hentai_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
@@ -1058,5 +885,15 @@ void cmd_hentai_prefix(struct discord *client, const struct discord_message *msg
         }
     }
 
-    hentai_lookup(client, msg->channel_id, tags, count);
+    if (tags && has_banned_tag(tags)) {
+        fun_send_reply(client, msg->channel_id, "That is against Discord ToS. I will not search for that~ 💢");
+        return;
+    }
+
+    fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    ctx->client = client;
+    ctx->channel_id = msg->channel_id;
+    ctx->count = count;
+    if (tags) strncpy(ctx->query, tags, sizeof(ctx->query) - 1);
+    discord_worker_add(client, hentai_worker, ctx);
 }

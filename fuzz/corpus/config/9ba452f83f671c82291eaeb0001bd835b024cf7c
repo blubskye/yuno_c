@@ -1,0 +1,1 @@
+{"discord_token":"t","default_prefix":".","database_path":"test.d","master_users":["123478"],"spam_max_warnings":3,"xp_per_msg":20,"ban_default_image":null,"dm_message":"I'm just","insufficient_permissions_message":"Nper","low_memory_mode":false}

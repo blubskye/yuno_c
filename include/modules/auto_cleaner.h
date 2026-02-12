@@ -9,7 +9,6 @@
 
 #include <stdint.h>
 #include <time.h>
-#include <pthread.h>
 
 /* Forward declaration */
 struct discord;
@@ -33,14 +32,15 @@ typedef struct {
     int delay_count;
     int free_head;  /* Head of free list */
     int running;
-    pthread_t timer_thread;
-    int64_t last_check;  /* Last time we decremented remaining_time */
+    struct discord *client;   /* Concord client for timer */
+    unsigned timer_id;        /* Concord timer handle */
+    int64_t last_check;       /* Last time we decremented remaining_time */
 } auto_cleaner_t;
 
 /* Auto cleaner lifecycle */
 int auto_cleaner_init(auto_cleaner_t *cleaner);
 void auto_cleaner_cleanup(auto_cleaner_t *cleaner);
-int auto_cleaner_start(auto_cleaner_t *cleaner);
+int auto_cleaner_start(auto_cleaner_t *cleaner, struct discord *client);
 void auto_cleaner_stop(auto_cleaner_t *cleaner);
 
 /* Delay operations */

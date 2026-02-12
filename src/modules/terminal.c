@@ -30,6 +30,7 @@ typedef struct {
 
 static watch_entry_t g_watches[MAX_WATCHES];
 static int g_watch_count = 0;
+static pthread_mutex_t g_watch_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void terminal_init(yuno_bot_t *bot) {
     g_terminal_bot = bot;
@@ -301,8 +302,8 @@ void terminal_cmd_list_commands(void) {
 
 /* ===== watch: real-time channel message monitoring ===== */
 
-/* Check if a channel is being watched */
-int terminal_is_watching(uint64_t channel_id) {
+/* Check if a channel is being watched (caller must hold g_watch_mutex or use terminal_notify_watch) */
+static int is_watching_unlocked(uint64_t channel_id) {
     for (int i = 0; i < g_watch_count; i++) {
         if (g_watches[i].channel_id == channel_id && g_watches[i].active) {
             return 1;
@@ -311,10 +312,21 @@ int terminal_is_watching(uint64_t channel_id) {
     return 0;
 }
 
+int terminal_is_watching(uint64_t channel_id) {
+    pthread_mutex_lock(&g_watch_mutex);
+    int result = is_watching_unlocked(channel_id);
+    pthread_mutex_unlock(&g_watch_mutex);
+    return result;
+}
+
 /* Called from on_message_create to display watched messages */
 void terminal_notify_watch(uint64_t channel_id, const char *author, const char *content,
                             int attachment_count, int has_embed) {
-    if (!terminal_is_watching(channel_id)) return;
+    pthread_mutex_lock(&g_watch_mutex);
+    int watching = is_watching_unlocked(channel_id);
+    pthread_mutex_unlock(&g_watch_mutex);
+
+    if (!watching) return;
 
     char time_buf[16];
     time_t now = time(NULL);
@@ -344,7 +356,9 @@ void terminal_cmd_watch(const char *args) {
 
     /* No args: show status */
     if (!args || strlen(args) == 0) {
+        pthread_mutex_lock(&g_watch_mutex);
         if (g_watch_count == 0) {
+            pthread_mutex_unlock(&g_watch_mutex);
             printf("📺 No active watches\n");
             printf("Usage: watch <channel-id> | watch stop <channel-id|all>\n");
             return;
@@ -355,6 +369,7 @@ void terminal_cmd_watch(const char *args) {
                 printf("  #%lu\n", (unsigned long)g_watches[i].channel_id);
             }
         }
+        pthread_mutex_unlock(&g_watch_mutex);
         return;
     }
 
@@ -372,16 +387,19 @@ void terminal_cmd_watch(const char *args) {
             printf("❌ Usage: watch stop <channel-id|all>\n");
             return;
         }
+        pthread_mutex_lock(&g_watch_mutex);
         if (strcmp(second, "all") == 0) {
             for (int i = 0; i < g_watch_count; i++) {
                 g_watches[i].active = 0;
             }
             g_watch_count = 0;
+            pthread_mutex_unlock(&g_watch_mutex);
             printf("✅ Stopped all watches\n");
             return;
         }
         uint64_t ch_id = strtoull(second, NULL, 10);
         if (ch_id == 0) {
+            pthread_mutex_unlock(&g_watch_mutex);
             printf("❌ Invalid channel ID\n");
             return;
         }
@@ -393,10 +411,12 @@ void terminal_cmd_watch(const char *args) {
                 if (i < g_watch_count) {
                     g_watches[i] = g_watches[g_watch_count];
                 }
+                pthread_mutex_unlock(&g_watch_mutex);
                 printf("✅ Stopped watching channel %lu\n", (unsigned long)ch_id);
                 return;
             }
         }
+        pthread_mutex_unlock(&g_watch_mutex);
         printf("❌ Channel %lu is not being watched\n", (unsigned long)ch_id);
         return;
     }
@@ -408,13 +428,17 @@ void terminal_cmd_watch(const char *args) {
         return;
     }
 
+    pthread_mutex_lock(&g_watch_mutex);
+
     /* Check if already watching */
-    if (terminal_is_watching(channel_id)) {
+    if (is_watching_unlocked(channel_id)) {
+        pthread_mutex_unlock(&g_watch_mutex);
         printf("📺 Already watching channel %lu\n", (unsigned long)channel_id);
         return;
     }
 
     if (g_watch_count >= MAX_WATCHES) {
+        pthread_mutex_unlock(&g_watch_mutex);
         printf("❌ Maximum %d watches reached. Stop some first.\n", MAX_WATCHES);
         return;
     }
@@ -422,6 +446,7 @@ void terminal_cmd_watch(const char *args) {
     g_watches[g_watch_count].channel_id = channel_id;
     g_watches[g_watch_count].active = 1;
     g_watch_count++;
+    pthread_mutex_unlock(&g_watch_mutex);
 
     printf("=== Now watching channel %lu ===\n", (unsigned long)channel_id);
     printf("Messages will appear in real-time.\n");
@@ -429,8 +454,10 @@ void terminal_cmd_watch(const char *args) {
 }
 
 void terminal_watch_cleanup(void) {
+    pthread_mutex_lock(&g_watch_mutex);
     memset(g_watches, 0, sizeof(g_watches));
     g_watch_count = 0;
+    pthread_mutex_unlock(&g_watch_mutex);
 }
 
 /* ===== texportbans: export guild bans to JSON file ===== */
@@ -810,5 +837,7 @@ void terminal_start(void) {
 
 void terminal_stop(void) {
     terminal_running = 0;
-    /* Note: Properly stopping the terminal thread requires signaling stdin */
+    /* Cancel the thread since it's likely blocked on fgets(stdin) */
+    pthread_cancel(terminal_thread);
+    pthread_join(terminal_thread, NULL);
 }

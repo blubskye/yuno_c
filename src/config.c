@@ -55,17 +55,20 @@ int config_load(yuno_config_t *config, const char *path) {
     }
 
     /* Parse discord_token */
-    if (json_object_object_get_ex(root, "discord_token", &value)) {
+    if (json_object_object_get_ex(root, "discord_token", &value) &&
+        !json_object_is_type(value, json_type_null)) {
         strncpy(config->discord_token, json_object_get_string(value), MAX_TOKEN_LEN - 1);
     }
 
     /* Parse default_prefix */
-    if (json_object_object_get_ex(root, "default_prefix", &value)) {
+    if (json_object_object_get_ex(root, "default_prefix", &value) &&
+        !json_object_is_type(value, json_type_null)) {
         strncpy(config->default_prefix, json_object_get_string(value), MAX_PREFIX_LEN - 1);
     }
 
     /* Parse database_path */
-    if (json_object_object_get_ex(root, "database_path", &value)) {
+    if (json_object_object_get_ex(root, "database_path", &value) &&
+        !json_object_is_type(value, json_type_null)) {
         strncpy(config->database_path, json_object_get_string(value), MAX_PATH_LEN - 1);
     }
 
@@ -77,7 +80,8 @@ int config_load(yuno_config_t *config, const char *path) {
             config->master_user_count = len;
             for (int i = 0; i < len; i++) {
                 struct json_object *item = json_object_array_get_idx(value, i);
-                strncpy(config->master_users[i], json_object_get_string(item), 31);
+                const char *str = json_object_get_string(item);
+                if (str) strncpy(config->master_users[i], str, 31);
             }
         }
     }
@@ -101,12 +105,14 @@ int config_load(yuno_config_t *config, const char *path) {
     }
 
     /* Parse dm_message */
-    if (json_object_object_get_ex(root, "dm_message", &value)) {
+    if (json_object_object_get_ex(root, "dm_message", &value) &&
+        !json_object_is_type(value, json_type_null)) {
         strncpy(config->dm_message, json_object_get_string(value), MAX_MESSAGE_LEN - 1);
     }
 
     /* Parse insufficient_permissions_message */
-    if (json_object_object_get_ex(root, "insufficient_permissions_message", &value)) {
+    if (json_object_object_get_ex(root, "insufficient_permissions_message", &value) &&
+        !json_object_is_type(value, json_type_null)) {
         strncpy(config->insufficient_permissions_message, json_object_get_string(value), MAX_MESSAGE_LEN - 1);
     }
 

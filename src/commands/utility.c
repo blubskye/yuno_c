@@ -2311,6 +2311,42 @@ void cmd_send_prefix(struct discord *client, const struct discord_message *msg, 
     send_prefix_reply(client, msg->channel_id, resp);
 }
 
+/* Async DM reply context and callback */
+typedef struct {
+    char dm_message[2048];
+    u64snowflake confirm_channel_id;  /* Channel to send confirmation */
+    u64snowflake application_id;      /* For slash: edit interaction */
+    char interaction_token[256];      /* For slash: edit interaction */
+    int is_slash;
+    uint64_t user_id;                 /* For confirmation message */
+} reply_dm_ctx_t;
+
+static void reply_dm_cleanup(struct discord *client, void *data) {
+    (void)client;
+    free(data);
+}
+
+static void on_reply_dm_created(struct discord *client, struct discord_response *resp,
+                                 const struct discord_channel *dm_channel) {
+    reply_dm_ctx_t *ctx = resp->data;
+
+    /* Send the DM */
+    struct discord_create_message msg_params = { .content = ctx->dm_message };
+    discord_create_message(client, dm_channel->id, &msg_params, NULL);
+
+    /* Send confirmation */
+    char confirm[256];
+    snprintf(confirm, sizeof(confirm), "Reply sent to <@%lu>~ 💕", (unsigned long)ctx->user_id);
+
+    if (ctx->is_slash) {
+        struct discord_edit_original_interaction_response edit = { .content = confirm };
+        discord_edit_original_interaction_response(client, ctx->application_id,
+            ctx->interaction_token, &edit, NULL);
+    } else {
+        send_prefix_reply(client, ctx->confirm_channel_id, confirm);
+    }
+}
+
 /* reply: reply to a DM inbox message */
 void cmd_reply_dm(struct discord *client, const struct discord_interaction *interaction) {
     if (!bot_is_master_user(g_bot, interaction->member->user->id)) {
@@ -2332,23 +2368,28 @@ void cmd_reply_dm(struct discord *client, const struct discord_interaction *inte
         return;
     }
 
-    /* Create DM channel and send */
+    /* Defer response since DM creation is async */
+    struct discord_interaction_response ack = {
+        .type = DISCORD_INTERACTION_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+        .data = &(struct discord_interaction_callback_data){ .flags = DISCORD_MESSAGE_EPHEMERAL }
+    };
+    discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
+
+    /* Create DM channel asynchronously */
+    reply_dm_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    strncpy(ctx->dm_message, message_val, sizeof(ctx->dm_message) - 1);
+    ctx->application_id = interaction->application_id;
+    strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
+    ctx->is_slash = 1;
+    ctx->user_id = user_id;
+
     struct discord_create_dm dm_params = { .recipient_id = user_id };
-    struct discord_channel dm_channel = { 0 };
-    struct discord_ret_channel ret = { .sync = &dm_channel };
-
-    if (discord_create_dm(client, &dm_params, &ret) != CCORD_OK) {
-        send_interaction_reply(client, interaction, "Failed to create DM channel~");
-        return;
-    }
-
-    struct discord_create_message msg_params = { .content = (char *)message_val };
-    discord_create_message(client, dm_channel.id, &msg_params, NULL);
-    discord_channel_cleanup(&dm_channel);
-
-    char resp[256];
-    snprintf(resp, sizeof(resp), "Reply sent to <@%lu>~ 💕", (unsigned long)user_id);
-    send_interaction_reply(client, interaction, resp);
+    struct discord_ret_channel ret = {
+        .done = on_reply_dm_created,
+        .data = ctx,
+        .cleanup = reply_dm_cleanup
+    };
+    discord_create_dm(client, &dm_params, &ret);
 }
 
 void cmd_reply_dm_prefix(struct discord *client, const struct discord_message *msg, const char *args) {
@@ -2375,22 +2416,19 @@ void cmd_reply_dm_prefix(struct discord *client, const struct discord_message *m
         return;
     }
 
+    /* Create DM channel asynchronously */
+    reply_dm_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    strncpy(ctx->dm_message, message, sizeof(ctx->dm_message) - 1);
+    ctx->confirm_channel_id = msg->channel_id;
+    ctx->user_id = user_id;
+
     struct discord_create_dm dm_params = { .recipient_id = user_id };
-    struct discord_channel dm_channel = { 0 };
-    struct discord_ret_channel ret = { .sync = &dm_channel };
-
-    if (discord_create_dm(client, &dm_params, &ret) != CCORD_OK) {
-        send_prefix_reply(client, msg->channel_id, "Failed to create DM channel~");
-        return;
-    }
-
-    struct discord_create_message msg_params = { .content = message };
-    discord_create_message(client, dm_channel.id, &msg_params, NULL);
-    discord_channel_cleanup(&dm_channel);
-
-    char resp[256];
-    snprintf(resp, sizeof(resp), "Reply sent to <@%lu>~ 💕", (unsigned long)user_id);
-    send_prefix_reply(client, msg->channel_id, resp);
+    struct discord_ret_channel ret = {
+        .done = on_reply_dm_created,
+        .data = ctx,
+        .cleanup = reply_dm_cleanup
+    };
+    discord_create_dm(client, &dm_params, &ret);
 }
 
 /* inbox: view DM inbox as Discord command */

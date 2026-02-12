@@ -1,0 +1,1 @@
+{"discord_token":"test_token_123","default_prefix":".","database_path":"test.db","master_users":["123456789"],"spam_max_warnings":3,"xp_per_msg":20,"ban_default_image":null,"dm_message":"I'm just a bot.","insufficient_permissions_message":"No permission~","low_memory_mode":false}

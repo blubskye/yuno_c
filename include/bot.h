@@ -59,6 +59,7 @@ typedef struct {
     voice_tracker_t voice_tracker;
     auto_cleaner_t auto_cleaner;
     lru_cache_t cache;
+    unsigned xp_flush_timer_id;
 } yuno_bot_t;
 
 /* Global bot instance (needed for callbacks) */

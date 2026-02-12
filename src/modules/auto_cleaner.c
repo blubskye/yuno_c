@@ -9,7 +9,6 @@
 #include "commands/moderation.h"
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Hash function for guild+channel - O(1) lookup */
 static inline uint32_t hash_guild_channel(uint64_t guild_id, uint64_t channel_id) {
@@ -40,18 +39,26 @@ void auto_cleaner_cleanup(auto_cleaner_t *cleaner) {
     cleaner->running = 0;
 }
 
-/* Forward declaration of timer thread */
-static void *auto_cleaner_timer(void *arg);
+/* Timer callback — runs on Concord event loop, replaces the old pthread+sleep(60) */
+static void auto_cleaner_timer_cb(struct discord *client, struct discord_timer *timer) {
+    (void)client;
+    auto_cleaner_t *cleaner = timer->data;
+    if (cleaner && cleaner->running) {
+        auto_cleaner_check(cleaner);
+    }
+}
 
-int auto_cleaner_start(auto_cleaner_t *cleaner) {
+int auto_cleaner_start(auto_cleaner_t *cleaner, struct discord *client) {
     if (cleaner->running) return 0;
     cleaner->running = 1;
+    cleaner->client = client;
 
-    if (pthread_create(&cleaner->timer_thread, NULL, auto_cleaner_timer, cleaner) != 0) {
-        cleaner->running = 0;
-        fprintf(stderr, "Failed to start auto-cleaner thread\n");
-        return -1;
-    }
+    /* Create a repeating 60-second timer on the Concord event loop */
+    cleaner->timer_id = discord_timer_interval(client,
+        auto_cleaner_timer_cb, NULL, cleaner,
+        60000,   /* initial delay: 60 seconds */
+        60000,   /* interval: 60 seconds */
+        -1);     /* repeat forever */
 
     printf("🧹 Auto-cleaner started~\n");
     return 0;
@@ -61,8 +68,10 @@ void auto_cleaner_stop(auto_cleaner_t *cleaner) {
     if (!cleaner->running) return;
     cleaner->running = 0;
 
-    /* Wait for timer thread to finish */
-    pthread_join(cleaner->timer_thread, NULL);
+    if (cleaner->client && cleaner->timer_id) {
+        discord_timer_cancel(cleaner->client, cleaner->timer_id);
+        cleaner->timer_id = 0;
+    }
     printf("🧹 Auto-cleaner stopped~\n");
 }
 
@@ -209,16 +218,4 @@ void auto_cleaner_check(auto_cleaner_t *cleaner) {
             }
         }
     }
-}
-
-/* Background timer thread */
-static void *auto_cleaner_timer(void *arg) {
-    auto_cleaner_t *cleaner = (auto_cleaner_t *)arg;
-
-    while (cleaner->running) {
-        sleep(60); /* Check every minute */
-        if (!cleaner->running) break;
-        auto_cleaner_check(cleaner);
-    }
-    return NULL;
 }

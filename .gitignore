@@ -45,4 +45,8 @@ compile_commands.json
 # Debug files
 *.dSYM/
 core
-PARITY_PLAN.md
+
+# Text and markdown files (except README)
+*.txt
+*.md
+!README.md

@@ -13,6 +13,7 @@
 #include "modules/activity_logger.h"
 #include "modules/auto_cleaner.h"
 #include "modules/http_client.h"
+#include <concord/discord-worker.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,12 +75,10 @@ void xp_batcher_add(yuno_bot_t *bot, uint64_t user_id, uint64_t guild_id, uint64
         batcher->count++;
     }
 
-    /* Flush if batch is full or time elapsed */
-    if (batcher->count >= MAX_PENDING_XP || (time(NULL) - batcher->last_flush) >= XP_FLUSH_INTERVAL) {
-        /* Also grant voice XP before flushing */
+    /* Flush if batch is full (periodic flush handled by Concord timer) */
+    if (batcher->count >= MAX_PENDING_XP) {
         voice_tracker_grant_xp(bot);
         xp_batcher_flush(bot);
-        /* Flush activity logs too */
         activity_logger_flush(bot->client, &bot->database);
     }
 }
@@ -278,6 +277,9 @@ int bot_init(yuno_bot_t *bot, const yuno_config_t *config) {
     /* Initialize HTTP client (libcurl) */
     http_global_init();
 
+    /* Initialize global worker threadpool for async HTTP commands */
+    discord_worker_global_init(0);
+
     return 0;
 }
 
@@ -286,7 +288,11 @@ void bot_cleanup(yuno_bot_t *bot) {
     auto_cleaner_stop(&bot->auto_cleaner);
     auto_cleaner_cleanup(&bot->auto_cleaner);
 
-    /* Flush any remaining XP and activity logs */
+    /* Cancel XP flush timer and do final flush */
+    if (bot->client && bot->xp_flush_timer_id) {
+        discord_timer_cancel(bot->client, bot->xp_flush_timer_id);
+        bot->xp_flush_timer_id = 0;
+    }
     xp_batcher_flush(bot);
     activity_logger_flush(bot->client, &bot->database);
 
@@ -297,13 +303,19 @@ void bot_cleanup(yuno_bot_t *bot) {
     /* Stop spam filter */
     spam_filter_cleanup();
 
+    /* Wait for any pending worker threads to finish */
+    if (bot->client) {
+        discord_worker_join(bot->client);
+    }
+
     if (bot->client) {
         discord_cleanup(bot->client);
         bot->client = NULL;
     }
     db_close(&bot->database);
 
-    /* Cleanup HTTP client */
+    /* Cleanup worker threadpool and HTTP client */
+    discord_worker_global_cleanup();
     http_global_cleanup();
 
     g_bot = NULL;
@@ -320,6 +332,17 @@ void bot_stop(yuno_bot_t *bot) {
     if (bot->client) {
         discord_shutdown(bot->client);
     }
+}
+
+/* XP/activity flush timer callback — runs on Concord event loop every 10 seconds */
+static void xp_flush_timer_cb(struct discord *client, struct discord_timer *timer) {
+    (void)client;
+    (void)timer;
+    if (!g_bot) return;
+
+    voice_tracker_grant_xp(g_bot);
+    xp_batcher_flush(g_bot);
+    activity_logger_flush(g_bot->client, &g_bot->database);
 }
 
 void on_ready(struct discord *client, const struct discord_ready *event) {
@@ -343,8 +366,15 @@ void on_ready(struct discord *client, const struct discord_ready *event) {
     /* Start terminal interface */
     terminal_start();
 
-    /* Start auto-cleaner background thread */
-    auto_cleaner_start(&g_bot->auto_cleaner);
+    /* Start auto-cleaner on Concord event loop timer */
+    auto_cleaner_start(&g_bot->auto_cleaner, client);
+
+    /* Start XP/activity flush timer (every 10 seconds) */
+    g_bot->xp_flush_timer_id = discord_timer_interval(client,
+        xp_flush_timer_cb, NULL, NULL,
+        10000,   /* initial delay: 10 seconds */
+        10000,   /* interval: 10 seconds */
+        -1);     /* repeat forever */
 }
 
 /* Command dispatch using hash-based lookup - O(1) average instead of O(n) strcmp chain */
@@ -691,6 +721,23 @@ void on_voice_state_update(struct discord *client, const struct discord_voice_st
     }
 }
 
+/* Async callback: DM channel created for welcome message */
+typedef struct {
+    char welcome_msg[2048];
+} welcome_dm_ctx_t;
+
+static void welcome_dm_cleanup(struct discord *client, void *data) {
+    (void)client;
+    free(data);
+}
+
+static void on_welcome_dm_created(struct discord *client, struct discord_response *resp,
+                                   const struct discord_channel *dm_channel) {
+    welcome_dm_ctx_t *ctx = resp->data;
+    struct discord_create_message msg_params = { .content = ctx->welcome_msg };
+    discord_create_message(client, dm_channel->id, &msg_params, NULL);
+}
+
 void on_guild_member_add(struct discord *client, const struct discord_guild_member *member) {
     if (!member->user || !member->guild_id) return;
 
@@ -716,24 +763,19 @@ void on_guild_member_add(struct discord *client, const struct discord_guild_memb
         return; /* No join message configured */
     }
 
-    /* Create DM channel */
-    struct discord_create_dm dm_params = { .recipient_id = member->user->id };
-    struct discord_channel dm_channel = { 0 };
-    struct discord_ret_channel ret = { .sync = &dm_channel };
-
-    if (discord_create_dm(client, &dm_params, &ret) != CCORD_OK) {
-        return;
-    }
-
-    /* Build welcome message with user mention */
-    char welcome_msg[2048];
-    snprintf(welcome_msg, sizeof(welcome_msg),
+    /* Build welcome message and create DM channel asynchronously */
+    welcome_dm_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    snprintf(ctx->welcome_msg, sizeof(ctx->welcome_msg),
         "**%s**\n\n%s\n\n💕 *— Yuno*",
         title, message);
 
-    struct discord_create_message msg_params = { .content = welcome_msg };
-    discord_create_message(client, dm_channel.id, &msg_params, NULL);
-    discord_channel_cleanup(&dm_channel);
+    struct discord_create_dm dm_params = { .recipient_id = member->user->id };
+    struct discord_ret_channel ret = {
+        .done = on_welcome_dm_created,
+        .data = ctx,
+        .cleanup = welcome_dm_cleanup
+    };
+    discord_create_dm(client, &dm_params, &ret);
 }
 
 void bot_update_presence(yuno_bot_t *bot, const bot_presence_t *presence) {

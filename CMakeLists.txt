@@ -7,6 +7,33 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Optional: SQLCipher for encrypted database
 option(USE_SQLCIPHER "Use SQLCipher for database encryption" OFF)
 
+# Sanitizer options (combinable, use with -DCMAKE_BUILD_TYPE=Debug)
+option(SANITIZE_ADDRESS "Enable AddressSanitizer (memory errors, leaks)" OFF)
+option(SANITIZE_UNDEFINED "Enable UndefinedBehaviorSanitizer" OFF)
+option(SANITIZE_THREAD "Enable ThreadSanitizer (data races)" OFF)
+
+if(SANITIZE_ADDRESS AND SANITIZE_THREAD)
+    message(FATAL_ERROR "ASan and TSan cannot be used together")
+endif()
+
+set(SANITIZER_FLAGS "")
+if(SANITIZE_ADDRESS)
+    set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize=address")
+endif()
+if(SANITIZE_UNDEFINED)
+    set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize=undefined")
+endif()
+if(SANITIZE_THREAD)
+    set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize=thread")
+endif()
+
+if(NOT "${SANITIZER_FLAGS}" STREQUAL "")
+    string(STRIP "${SANITIZER_FLAGS}" SANITIZER_FLAGS)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS} -fno-omit-frame-pointer -g")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS}")
+    message(STATUS "Sanitizers enabled: ${SANITIZER_FLAGS}")
+endif()
+
 # Find required packages
 find_package(CURL REQUIRED)
 if(USE_SQLCIPHER)
