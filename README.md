@@ -270,6 +270,20 @@ cp config.example.json config.json
 
 Or set the `DISCORD_TOKEN` environment variable for token-only setup. If using SQLCipher, also set `YUNO_DB_KEY` for the encryption passphrase.
 
+### Migrating from JS Version
+
+If you have an existing database from the [JavaScript version](https://github.com/japaneseenrichmentorganization/Yuno-Gasai-2), you can migrate it:
+
+```bash
+# Creates a new file (keeps original intact)
+python3 tools/migrate_js_db.py yuno_js.db yuno.db
+
+# Or in-place (backs up original first)
+python3 tools/migrate_js_db.py yuno.db
+```
+
+The migration script handles all schema differences: table/column renames, type conversions (`bot_presence` TEXT→INTEGER), `levelRoleMap` JSON deserialization into `level_roles` table, and voice XP rate conversion. See `tools/migrate_js_db.py` for details.
+
 ### Running
 
 ```bash
@@ -427,6 +441,8 @@ yuno_c/
 │       └── terminal.c         # CLI interface & terminal commands
 ├── .github/workflows/
 │   └── release.yml            # CI/CD: builds for Linux amd64/arm64
+├── tools/
+│   └── migrate_js_db.py       # JS → C database migration script
 ├── data/                      # Runtime data (quotes, images, bans)
 ├── config.example.json        # Example configuration
 ├── CMakeLists.txt             # Build system
