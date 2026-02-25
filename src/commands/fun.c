@@ -314,12 +314,23 @@ static void url_encode(const char *src, char *dst, size_t dst_len) {
 
 /* Truncate text to max length, adding "..." if truncated */
 static void truncate_text(const char *src, char *dst, size_t max_len) {
-    if (strlen(src) <= max_len) {
-        strcpy(dst, src);
+    size_t src_len = strlen(src);
+    if (src_len <= max_len) {
+        /* Safe copy with bounds check */
+        strncpy(dst, src, max_len);
+        dst[max_len] = '\0';
     } else {
-        strncpy(dst, src, max_len - 3);
-        dst[max_len - 3] = '\0';
-        strcat(dst, "...");
+        /* Truncate with ellipsis */
+        if (max_len >= 3) {
+            strncpy(dst, src, max_len - 3);
+            dst[max_len - 3] = '\0';
+            /* Safe concatenation - we know there's space */
+            strncat(dst, "...", 3);
+        } else {
+            /* Not enough space for ellipsis */
+            strncpy(dst, src, max_len);
+            dst[max_len] = '\0';
+        }
     }
 }
 
@@ -414,7 +425,7 @@ static void anime_worker(void *data) {
     truncate_text(synopsis, synopsis_trunc, 350);
     char ep_str[16];
     if (episodes > 0) snprintf(ep_str, sizeof(ep_str), "%d", episodes);
-    else strcpy(ep_str, "TBD");
+    else strncpy(ep_str, "TBD", sizeof(ep_str) - 1), ep_str[sizeof(ep_str) - 1] = '\0';
 
     char result[2048];
     snprintf(result, sizeof(result),
@@ -444,6 +455,10 @@ void cmd_anime(struct discord *client, const struct discord_interaction *interac
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->application_id = interaction->application_id;
     strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
@@ -459,6 +474,10 @@ void cmd_anime_prefix(struct discord *client, const struct discord_message *msg,
     }
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_reply(client, msg->channel_id, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->channel_id = msg->channel_id;
     strncpy(ctx->query, args, sizeof(ctx->query) - 1);
@@ -531,9 +550,9 @@ static void manga_worker(void *data) {
     truncate_text(synopsis, synopsis_trunc, 350);
     char ch_str[16], vol_str[16];
     if (chapters > 0) snprintf(ch_str, sizeof(ch_str), "%d", chapters);
-    else strcpy(ch_str, "TBD");
+    else strncpy(ch_str, "TBD", sizeof(ch_str) - 1), ch_str[sizeof(ch_str) - 1] = '\0';
     if (volumes > 0) snprintf(vol_str, sizeof(vol_str), "%d", volumes);
-    else strcpy(vol_str, "TBD");
+    else strncpy(vol_str, "TBD", sizeof(vol_str) - 1), vol_str[sizeof(vol_str) - 1] = '\0';
 
     char result[2048];
     snprintf(result, sizeof(result),
@@ -563,6 +582,10 @@ void cmd_manga(struct discord *client, const struct discord_interaction *interac
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->application_id = interaction->application_id;
     strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
@@ -578,6 +601,10 @@ void cmd_manga_prefix(struct discord *client, const struct discord_message *msg,
     }
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_reply(client, msg->channel_id, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->channel_id = msg->channel_id;
     strncpy(ctx->query, args, sizeof(ctx->query) - 1);
@@ -630,6 +657,10 @@ void cmd_neko(struct discord *client, const struct discord_interaction *interact
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->application_id = interaction->application_id;
     strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
@@ -642,6 +673,10 @@ void cmd_neko_prefix(struct discord *client, const struct discord_message *msg, 
     int lewd = (args && (strcmp(args, "lewd") == 0 || strcmp(args, "nsfw") == 0));
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_reply(client, msg->channel_id, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->channel_id = msg->channel_id;
     ctx->lewd = lewd;
@@ -732,6 +767,10 @@ void cmd_urban(struct discord *client, const struct discord_interaction *interac
     discord_create_interaction_response(client, interaction->id, interaction->token, &ack, NULL);
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->application_id = interaction->application_id;
     strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
@@ -747,6 +786,10 @@ void cmd_urban_prefix(struct discord *client, const struct discord_message *msg,
     }
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_reply(client, msg->channel_id, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->channel_id = msg->channel_id;
     strncpy(ctx->query, args, sizeof(ctx->query) - 1);
@@ -858,6 +901,10 @@ void cmd_hentai(struct discord *client, const struct discord_interaction *intera
     }
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->application_id = interaction->application_id;
     strncpy(ctx->interaction_token, interaction->token, sizeof(ctx->interaction_token) - 1);
@@ -891,6 +938,10 @@ void cmd_hentai_prefix(struct discord *client, const struct discord_message *msg
     }
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fun_send_reply(client, msg->channel_id, "Memory allocation failed~");
+        return;
+    }
     ctx->client = client;
     ctx->channel_id = msg->channel_id;
     ctx->count = count;

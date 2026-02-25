@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <limits.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 
@@ -21,6 +23,33 @@ static u64snowflake parse_channel_mention(const char *str);
 static void send_interaction_reply(struct discord *client,
     const struct discord_interaction *interaction, const char *content);
 static void send_prefix_reply(struct discord *client, u64snowflake channel_id, const char *content);
+
+/**
+ * Safely parse integer with proper error checking.
+ * Returns 0 on success, -1 on error.
+ * Sets *out_value only on success.
+ */
+static int safe_parse_int(const char *str, int *out_value, int min_val, int max_val) {
+    if (!str || !out_value) return -1;
+
+    char *endptr;
+    errno = 0;
+    long val = strtol(str, &endptr, 10);
+
+    /* Check for various error conditions */
+    if (errno == ERANGE || val < INT_MIN || val > INT_MAX) {
+        return -1;  /* Overflow/underflow */
+    }
+    if (endptr == str || *endptr != '\0') {
+        return -1;  /* No conversion or trailing garbage */
+    }
+    if (val < min_val || val > max_val) {
+        return -1;  /* Out of acceptable range */
+    }
+
+    *out_value = (int)val;
+    return 0;
+}
 
 void cmd_ping(struct discord *client, const struct discord_interaction *interaction) {
     struct timespec start, end;
@@ -432,8 +461,16 @@ void cmd_auto_clean(struct discord *client, const struct discord_interaction *in
     char response_msg[1024];
 
     if (strcmp(sub, "add") == 0 || strcmp(sub, "edit") == 0) {
-        int hours = hours_val ? atoi(hours_val) : 0;
-        int warning = warning_val ? atoi(warning_val) : 5;
+        int hours = 0;
+        if (hours_val && safe_parse_int(hours_val, &hours, 1, 8760) != 0) {  /* Max 1 year in hours */
+            send_interaction_reply(client, interaction, "Invalid hours value (must be 1-8760)~");
+            return;
+        }
+        int warning = 5;
+        if (warning_val && safe_parse_int(warning_val, &warning, 0, 1440) != 0) {  /* Max 1 day in minutes */
+            send_interaction_reply(client, interaction, "Invalid warning value (must be 0-1440 minutes)~");
+            return;
+        }
         if (hours <= 0) {
             send_interaction_reply(client, interaction,
                 "Usage: `/auto-clean add <channel> <hours_between_cleans> [warning_minutes]`~");
@@ -448,8 +485,18 @@ void cmd_auto_clean(struct discord *client, const struct discord_interaction *in
     } else if (strcmp(sub, "reset") == 0) {
         auto_clean_reset(client, interaction->guild_id, channel_id, response_msg, sizeof(response_msg));
     } else if (strcmp(sub, "delay") == 0) {
-        int mins = minutes_val ? atoi(minutes_val) : (hours_val ? atoi(hours_val) : 5);
-        if (mins <= 0) mins = 5;
+        int mins = 5;
+        if (minutes_val) {
+            if (safe_parse_int(minutes_val, &mins, 1, 1440) != 0) {
+                send_interaction_reply(client, interaction, "Invalid minutes value (must be 1-1440)~");
+                return;
+            }
+        } else if (hours_val) {
+            if (safe_parse_int(hours_val, &mins, 1, 1440) != 0) {
+                send_interaction_reply(client, interaction, "Invalid hours value (must be 1-1440)~");
+                return;
+            }
+        }
         auto_clean_delay_cmd(client, interaction->guild_id, channel_id, mins, response_msg, sizeof(response_msg));
     } else {
         snprintf(response_msg, sizeof(response_msg),
@@ -490,8 +537,16 @@ void cmd_auto_clean_prefix(struct discord *client, const struct discord_message 
             send_prefix_reply(client, msg->channel_id, "Invalid channel~");
             return;
         }
-        int hours = atoi(arg3);
-        int warning = parsed >= 4 ? atoi(arg4) : 5;
+        int hours;
+        if (safe_parse_int(arg3, &hours, 1, 8760) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid hours value (must be 1-8760)~");
+            return;
+        }
+        int warning = 5;
+        if (parsed >= 4 && safe_parse_int(arg4, &warning, 0, 1440) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid warning value (must be 0-1440 minutes)~");
+            return;
+        }
         auto_clean_add(client, msg->guild_id, channel_id, hours, warning, response_msg, sizeof(response_msg));
     } else if (strcmp(sub, "remove") == 0) {
         u64snowflake channel_id = channel_str[0] ? parse_channel_mention(channel_str) : msg->channel_id;
@@ -516,8 +571,11 @@ void cmd_auto_clean_prefix(struct discord *client, const struct discord_message 
             send_prefix_reply(client, msg->channel_id, "Invalid channel~");
             return;
         }
-        int mins = arg3[0] ? atoi(arg3) : 5;
-        if (mins <= 0) mins = 5;
+        int mins = 5;
+        if (arg3[0] && safe_parse_int(arg3, &mins, 1, 1440) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid minutes value (must be 1-1440)~");
+            return;
+        }
         auto_clean_delay_cmd(client, msg->guild_id, channel_id, mins, response_msg, sizeof(response_msg));
     } else {
         snprintf(response_msg, sizeof(response_msg),
@@ -535,8 +593,11 @@ void cmd_delay(struct discord *client, const struct discord_interaction *interac
     }
 
     const char *minutes_val = get_util_option_value(interaction, "minutes");
-    int minutes = minutes_val ? atoi(minutes_val) : 5;
-    if (minutes <= 0) minutes = 5;
+    int minutes = 5;
+    if (minutes_val && safe_parse_int(minutes_val, &minutes, 1, 1440) != 0) {
+        send_interaction_reply(client, interaction, "Invalid minutes value (must be 1-1440)~");
+        return;
+    }
 
     char response_msg[256];
     auto_clean_delay_cmd(client, interaction->guild_id, interaction->channel_id,
@@ -565,11 +626,16 @@ void cmd_delay_prefix(struct discord *client, const struct discord_message *msg,
         /* Check if arg1 is a channel mention or a number */
         if (arg1[0] == '<' && arg1[1] == '#') {
             channel_id = parse_channel_mention(arg1);
-            if (parsed >= 2) minutes = atoi(arg2);
+            if (parsed >= 2 && safe_parse_int(arg2, &minutes, 1, 1440) != 0) {
+                send_prefix_reply(client, msg->channel_id, "Invalid minutes value (must be 1-1440)~");
+                return;
+            }
         } else {
-            minutes = atoi(arg1);
+            if (safe_parse_int(arg1, &minutes, 1, 1440) != 0) {
+                send_prefix_reply(client, msg->channel_id, "Invalid minutes value (must be 1-1440)~");
+                return;
+            }
         }
-        if (minutes <= 0) minutes = 5;
     }
 
     char response_msg[256];
@@ -637,7 +703,13 @@ void cmd_leaderboard(struct discord *client, const struct discord_interaction *i
 
     char response_msg[2048];
     char *ptr = response_msg;
-    ptr += sprintf(ptr, "🏆 **Server Leaderboard**\n*\"Look who's been the most active~\"* 💕\n\n");
+    size_t remaining = sizeof(response_msg);
+    int written;
+
+    written = snprintf(ptr, remaining, "🏆 **Server Leaderboard**\n*\"Look who's been the most active~\"* 💕\n\n");
+    if (written < 0 || (size_t)written >= remaining) goto leaderboard_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     for (int i = 0; i < count; i++) {
         const char *medal;
@@ -646,16 +718,27 @@ void cmd_leaderboard(struct discord *client, const struct discord_interaction *i
         else if (i == 2) medal = "🥉";
         else medal = "";
 
-        ptr += sprintf(ptr, "%s %d. <@%lu> - Level %d (%ld XP)\n",
+        written = snprintf(ptr, remaining, "%s %d. <@%lu> - Level %d (%ld XP)\n",
             medal, i + 1,
             (unsigned long)top_users[i].user_id,
             top_users[i].level,
             (long)top_users[i].xp);
+        if (written < 0 || (size_t)written >= remaining) {
+            snprintf(ptr, remaining, "\n... (%d more)", count - i);
+            break;
+        }
+        ptr += written;
+        remaining -= written;
     }
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No one has earned XP yet~");
+        written = snprintf(ptr, remaining, "No one has earned XP yet~");
+        if (written < 0 || (size_t)written >= remaining) goto leaderboard_buffer_full;
+        ptr += written;
+        remaining -= written;
     }
+
+leaderboard_buffer_full:
 
     struct discord_interaction_response response = {
         .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
@@ -735,8 +818,9 @@ void cmd_bot_ban_prefix(struct discord *client, const struct discord_message *ms
     char args_copy[512];
     strncpy(args_copy, args, sizeof(args_copy) - 1);
     args_copy[sizeof(args_copy) - 1] = '\0';
-    char *user_str = strtok(args_copy, " ");
-    char *reason = strtok(NULL, "");
+    char *saveptr;
+    char *user_str = strtok_r(args_copy, " ", &saveptr);
+    char *reason = strtok_r(NULL, "", &saveptr);
 
     uint64_t user_id = strtoull(user_str, NULL, 10);
     if (user_id == 0) {
@@ -966,9 +1050,9 @@ void cmd_set_level(struct discord *client, const struct discord_interaction *int
         return;
     }
 
-    int level = atoi(level_val);
-    if (level < 0) {
-        send_interaction_reply(client, interaction, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(level_val, &level, 0, 1000) != 0) {
+        send_interaction_reply(client, interaction, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1002,9 +1086,9 @@ void cmd_set_level_prefix(struct discord *client, const struct discord_message *
         return;
     }
 
-    int level = atoi(level_str);
-    if (level < 0) {
-        send_prefix_reply(client, msg->channel_id, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(level_str, &level, 0, 1000) != 0) {
+        send_prefix_reply(client, msg->channel_id, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1137,9 +1221,9 @@ void cmd_mass_setxp(struct discord *client, const struct discord_interaction *in
         return;
     }
 
-    int level = atoi(level_val);
-    if (level < 0) {
-        send_interaction_reply(client, interaction, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(level_val, &level, 0, 1000) != 0) {
+        send_interaction_reply(client, interaction, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1166,9 +1250,9 @@ void cmd_mass_setxp_prefix(struct discord *client, const struct discord_message 
         return;
     }
 
-    int level = atoi(args);
-    if (level < 0) {
-        send_prefix_reply(client, msg->channel_id, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(args, &level, 0, 1000) != 0) {
+        send_prefix_reply(client, msg->channel_id, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1201,9 +1285,9 @@ void cmd_set_levelrolemap(struct discord *client, const struct discord_interacti
         return;
     }
 
-    int level = atoi(level_val);
-    if (level < 0) {
-        send_interaction_reply(client, interaction, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(level_val, &level, 0, 1000) != 0) {
+        send_interaction_reply(client, interaction, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1239,9 +1323,9 @@ void cmd_set_levelrolemap_prefix(struct discord *client, const struct discord_me
         return;
     }
 
-    int level = atoi(level_str);
-    if (level < 0) {
-        send_prefix_reply(client, msg->channel_id, "Level must be non-negative~");
+    int level;
+    if (safe_parse_int(level_str, &level, 0, 1000) != 0) {
+        send_prefix_reply(client, msg->channel_id, "Invalid level value (must be 0-1000)~");
         return;
     }
 
@@ -1503,12 +1587,20 @@ void cmd_set_vcxp(struct discord *client, const struct discord_interaction *inte
         config.enabled = parse_toggle(toggle_val);
     }
     if (xp_val) {
-        config.xp_per_minute = atoi(xp_val);
-        if (config.xp_per_minute <= 0) config.xp_per_minute = 5;
+        int xp_per_min;
+        if (safe_parse_int(xp_val, &xp_per_min, 1, 1000) != 0) {
+            send_interaction_reply(client, interaction, "Invalid XP per minute (must be 1-1000)~");
+            return;
+        }
+        config.xp_per_minute = xp_per_min;
     }
     if (min_users_val) {
-        config.min_users = atoi(min_users_val);
-        if (config.min_users < 1) config.min_users = 1;
+        int min_users;
+        if (safe_parse_int(min_users_val, &min_users, 1, 100) != 0) {
+            send_interaction_reply(client, interaction, "Invalid min users (must be 1-100)~");
+            return;
+        }
+        config.min_users = min_users;
     }
 
     config.guild_id = interaction->guild_id;
@@ -1549,12 +1641,20 @@ void cmd_set_vcxp_prefix(struct discord *client, const struct discord_message *m
 
     if (toggle_str[0]) config.enabled = parse_toggle(toggle_str);
     if (xp_str[0]) {
-        config.xp_per_minute = atoi(xp_str);
-        if (config.xp_per_minute <= 0) config.xp_per_minute = 5;
+        int xp_per_min;
+        if (safe_parse_int(xp_str, &xp_per_min, 1, 1000) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid XP per minute (must be 1-1000)~");
+            return;
+        }
+        config.xp_per_minute = xp_per_min;
     }
     if (min_str[0]) {
-        config.min_users = atoi(min_str);
-        if (config.min_users < 1) config.min_users = 1;
+        int min_users;
+        if (safe_parse_int(min_str, &min_users, 1, 100) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid min users (must be 1-100)~");
+            return;
+        }
+        config.min_users = min_users;
     }
 
     config.guild_id = msg->guild_id;
@@ -1645,10 +1745,20 @@ static void config_set(yuno_config_t *cfg, const char *key, const char *value, c
         cfg->default_prefix[MAX_PREFIX_LEN - 1] = '\0';
         snprintf(out, out_len, "Set `%s` to `%s`~ 💕", key, cfg->default_prefix);
     } else if (strcmp(key, "xp_per_msg") == 0 || strcmp(key, "chat.exppermsg") == 0) {
-        cfg->xp_per_msg = atoi(value);
+        int xp_val;
+        if (safe_parse_int(value, &xp_val, 0, 1000) != 0) {
+            snprintf(out, out_len, "Invalid value for `%s` (must be 0-1000)~", key);
+            return;
+        }
+        cfg->xp_per_msg = xp_val;
         snprintf(out, out_len, "Set `%s` to `%d`~ 💕", key, cfg->xp_per_msg);
     } else if (strcmp(key, "spam_max_warnings") == 0) {
-        cfg->spam_max_warnings = atoi(value);
+        int warnings_val;
+        if (safe_parse_int(value, &warnings_val, 1, 100) != 0) {
+            snprintf(out, out_len, "Invalid value for `%s` (must be 1-100)~", key);
+            return;
+        }
+        cfg->spam_max_warnings = warnings_val;
         snprintf(out, out_len, "Set `%s` to `%d`~ 💕", key, cfg->spam_max_warnings);
     } else if (strcmp(key, "dm_message") == 0) {
         strncpy(cfg->dm_message, value, MAX_MESSAGE_LEN - 1);
@@ -2049,23 +2159,42 @@ void cmd_log_status(struct discord *client, const struct discord_interaction *in
 
     char response[1024];
     char *ptr = response;
+    size_t remaining = sizeof(response);
+    int written;
 
-    ptr += sprintf(ptr, "📋 **Activity Log Status**\n\n");
+    written = snprintf(ptr, remaining, "📋 **Activity Log Status**\n\n");
+    if (written < 0 || (size_t)written >= remaining) goto log_status_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No log channels configured~\n");
+        written = snprintf(ptr, remaining, "No log channels configured~\n");
+        if (written < 0 || (size_t)written >= remaining) goto log_status_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
         for (int i = 0; i < count; i++) {
-            ptr += sprintf(ptr, "**%s:** <#%lu> (%s)\n",
+            written = snprintf(ptr, remaining, "**%s:** <#%lu> (%s)\n",
                 channels[i].log_type,
                 (unsigned long)channels[i].channel_id,
                 channels[i].enabled ? "enabled" : "disabled");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
         }
     }
 
-    ptr += sprintf(ptr, "\n**Flush interval:** %ds\n**Max buffer:** %d",
+    written = snprintf(ptr, remaining, "\n**Flush interval:** %ds\n**Max buffer:** %d",
         settings.flush_interval > 0 ? settings.flush_interval : 30,
         settings.max_buffer_size > 0 ? settings.max_buffer_size : 50);
+    if (written < 0 || (size_t)written >= remaining) goto log_status_buffer_full;
+    ptr += written;
+    remaining -= written;
+
+log_status_buffer_full:
 
     send_interaction_reply(client, interaction, response);
 }
@@ -2086,23 +2215,42 @@ void cmd_log_status_prefix(struct discord *client, const struct discord_message 
 
     char response[1024];
     char *ptr = response;
+    size_t remaining = sizeof(response);
+    int written;
 
-    ptr += sprintf(ptr, "📋 **Activity Log Status**\n\n");
+    written = snprintf(ptr, remaining, "📋 **Activity Log Status**\n\n");
+    if (written < 0 || (size_t)written >= remaining) goto log_status_prefix_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No log channels configured~\n");
+        written = snprintf(ptr, remaining, "No log channels configured~\n");
+        if (written < 0 || (size_t)written >= remaining) goto log_status_prefix_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
         for (int i = 0; i < count; i++) {
-            ptr += sprintf(ptr, "**%s:** <#%lu> (%s)\n",
+            written = snprintf(ptr, remaining, "**%s:** <#%lu> (%s)\n",
                 channels[i].log_type,
                 (unsigned long)channels[i].channel_id,
                 channels[i].enabled ? "enabled" : "disabled");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
         }
     }
 
-    ptr += sprintf(ptr, "\n**Flush interval:** %ds\n**Max buffer:** %d",
+    written = snprintf(ptr, remaining, "\n**Flush interval:** %ds\n**Max buffer:** %d",
         settings.flush_interval > 0 ? settings.flush_interval : 30,
         settings.max_buffer_size > 0 ? settings.max_buffer_size : 50);
+    if (written < 0 || (size_t)written >= remaining) goto log_status_prefix_buffer_full;
+    ptr += written;
+    remaining -= written;
+
+log_status_prefix_buffer_full:
 
     send_prefix_reply(client, msg->channel_id, response);
 }
@@ -2127,12 +2275,20 @@ void cmd_set_logsettings(struct discord *client, const struct discord_interactio
     settings.guild_id = interaction->guild_id;
 
     if (interval_val) {
-        settings.flush_interval = atoi(interval_val);
-        if (settings.flush_interval < 5) settings.flush_interval = 5;
+        int interval;
+        if (safe_parse_int(interval_val, &interval, 5, 3600) != 0) {
+            send_interaction_reply(client, interaction, "Invalid flush interval (must be 5-3600 seconds)~");
+            return;
+        }
+        settings.flush_interval = interval;
     }
     if (buffer_val) {
-        settings.max_buffer_size = atoi(buffer_val);
-        if (settings.max_buffer_size < 10) settings.max_buffer_size = 10;
+        int buffer_size;
+        if (safe_parse_int(buffer_val, &buffer_size, 10, 10000) != 0) {
+            send_interaction_reply(client, interaction, "Invalid buffer size (must be 10-10000)~");
+            return;
+        }
+        settings.max_buffer_size = buffer_size;
     }
 
     db_set_log_settings(&g_bot->database, &settings);
@@ -2165,12 +2321,20 @@ void cmd_set_logsettings_prefix(struct discord *client, const struct discord_mes
     settings.guild_id = msg->guild_id;
 
     if (interval_str[0]) {
-        settings.flush_interval = atoi(interval_str);
-        if (settings.flush_interval < 5) settings.flush_interval = 5;
+        int interval;
+        if (safe_parse_int(interval_str, &interval, 5, 3600) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid flush interval (must be 5-3600 seconds)~");
+            return;
+        }
+        settings.flush_interval = interval;
     }
     if (buffer_str[0]) {
-        settings.max_buffer_size = atoi(buffer_str);
-        if (settings.max_buffer_size < 10) settings.max_buffer_size = 10;
+        int buffer_size;
+        if (safe_parse_int(buffer_str, &buffer_size, 10, 10000) != 0) {
+            send_prefix_reply(client, msg->channel_id, "Invalid buffer size (must be 10-10000)~");
+            return;
+        }
+        settings.max_buffer_size = buffer_size;
     }
 
     db_set_log_settings(&g_bot->database, &settings);
@@ -2444,32 +2608,52 @@ void cmd_inbox(struct discord *client, const struct discord_interaction *interac
 
     char resp[2048];
     char *ptr = resp;
+    size_t remaining = sizeof(resp);
+    int written;
     int unread = 0;
     db_get_unread_dm_count(&g_bot->database);
 
-    ptr += sprintf(ptr, "📬 **DM Inbox** (%d messages)\n\n", count);
+    written = snprintf(ptr, remaining, "📬 **DM Inbox** (%d messages)\n\n", count);
+    if (written < 0 || (size_t)written >= remaining) goto inbox_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No DMs in inbox~");
+        written = snprintf(ptr, remaining, "No DMs in inbox~");
+        if (written < 0 || (size_t)written >= remaining) goto inbox_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
-        for (int i = 0; i < count && (ptr - resp) < 1800; i++) {
+        for (int i = 0; i < count; i++) {
             char time_buf[32];
             struct tm *tm = localtime(&dms[i].timestamp);
             strftime(time_buf, sizeof(time_buf), "%m/%d %H:%M", tm);
-            ptr += sprintf(ptr, "%s **%s** (`%lu`): %.100s%s\n",
+            written = snprintf(ptr, remaining, "%s **%s** (`%lu`): %.100s%s\n",
                 dms[i].read_status ? "" : "**[NEW]** ",
                 dms[i].username, (unsigned long)dms[i].user_id,
                 dms[i].content,
                 strlen(dms[i].content) > 100 ? "..." : "");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
+
             if (!dms[i].read_status) {
                 unread++;
                 db_mark_dm_read(&g_bot->database, dms[i].id);
             }
         }
         if (unread > 0) {
-            ptr += sprintf(ptr, "\n*Marked %d as read*", unread);
+            written = snprintf(ptr, remaining, "\n*Marked %d as read*", unread);
+            if (written < 0 || (size_t)written >= remaining) goto inbox_buffer_full;
+            ptr += written;
+            remaining -= written;
         }
     }
+
+inbox_buffer_full:
 
     send_interaction_reply(client, interaction, resp);
 }
@@ -2487,31 +2671,51 @@ void cmd_inbox_prefix(struct discord *client, const struct discord_message *msg,
 
     char resp[2048];
     char *ptr = resp;
+    size_t remaining = sizeof(resp);
+    int written;
     int unread = 0;
 
-    ptr += sprintf(ptr, "📬 **DM Inbox** (%d messages)\n\n", count);
+    written = snprintf(ptr, remaining, "📬 **DM Inbox** (%d messages)\n\n", count);
+    if (written < 0 || (size_t)written >= remaining) goto inbox_prefix_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No DMs in inbox~");
+        written = snprintf(ptr, remaining, "No DMs in inbox~");
+        if (written < 0 || (size_t)written >= remaining) goto inbox_prefix_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
-        for (int i = 0; i < count && (ptr - resp) < 1800; i++) {
+        for (int i = 0; i < count; i++) {
             char time_buf[32];
             struct tm *tm = localtime(&dms[i].timestamp);
             strftime(time_buf, sizeof(time_buf), "%m/%d %H:%M", tm);
-            ptr += sprintf(ptr, "%s **%s** (`%lu`): %.100s%s\n",
+            written = snprintf(ptr, remaining, "%s **%s** (`%lu`): %.100s%s\n",
                 dms[i].read_status ? "" : "**[NEW]** ",
                 dms[i].username, (unsigned long)dms[i].user_id,
                 dms[i].content,
                 strlen(dms[i].content) > 100 ? "..." : "");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
+
             if (!dms[i].read_status) {
                 unread++;
                 db_mark_dm_read(&g_bot->database, dms[i].id);
             }
         }
         if (unread > 0) {
-            ptr += sprintf(ptr, "\n*Marked %d as read*", unread);
+            written = snprintf(ptr, remaining, "\n*Marked %d as read*", unread);
+            if (written < 0 || (size_t)written >= remaining) goto inbox_prefix_buffer_full;
+            ptr += written;
+            remaining -= written;
         }
     }
+
+inbox_prefix_buffer_full:
 
     send_prefix_reply(client, msg->channel_id, resp);
 }
@@ -2952,21 +3156,38 @@ void cmd_mentionresponses(struct discord *client, const struct discord_interacti
 
     char resp[2048];
     char *ptr = resp;
-    ptr += sprintf(ptr, "💬 **Mention Responses** (%d total)\n\n", count);
+    size_t remaining = sizeof(resp);
+    int written;
+
+    written = snprintf(ptr, remaining, "💬 **Mention Responses** (%d total)\n\n", count);
+    if (written < 0 || (size_t)written >= remaining) goto mentionresponses_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No mention responses configured~");
+        written = snprintf(ptr, remaining, "No mention responses configured~");
+        if (written < 0 || (size_t)written >= remaining) goto mentionresponses_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
-        for (int i = 0; i < count && (ptr - resp) < 1800; i++) {
-            ptr += sprintf(ptr, "**%d.** <@%lu> + `%s` → %.100s%s%s\n",
+        for (int i = 0; i < count; i++) {
+            written = snprintf(ptr, remaining, "**%d.** <@%lu> + `%s` → %.100s%s%s\n",
                 i + 1,
                 (unsigned long)results[i].user_id,
                 results[i].trigger,
                 results[i].response,
                 strlen(results[i].response) > 100 ? "..." : "",
                 results[i].image_url[0] ? " 🖼️" : "");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
         }
     }
+
+mentionresponses_buffer_full:
 
     send_interaction_reply(client, interaction, resp);
 }
@@ -2984,21 +3205,38 @@ void cmd_mentionresponses_prefix(struct discord *client, const struct discord_me
 
     char resp[2048];
     char *ptr = resp;
-    ptr += sprintf(ptr, "💬 **Mention Responses** (%d total)\n\n", count);
+    size_t remaining = sizeof(resp);
+    int written;
+
+    written = snprintf(ptr, remaining, "💬 **Mention Responses** (%d total)\n\n", count);
+    if (written < 0 || (size_t)written >= remaining) goto mentionresponses_prefix_buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No mention responses configured~");
+        written = snprintf(ptr, remaining, "No mention responses configured~");
+        if (written < 0 || (size_t)written >= remaining) goto mentionresponses_prefix_buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
-        for (int i = 0; i < count && (ptr - resp) < 1800; i++) {
-            ptr += sprintf(ptr, "**%d.** <@%lu> + `%s` → %.100s%s%s\n",
+        for (int i = 0; i < count; i++) {
+            written = snprintf(ptr, remaining, "**%d.** <@%lu> + `%s` → %.100s%s%s\n",
                 i + 1,
                 (unsigned long)results[i].user_id,
                 results[i].trigger,
                 results[i].response,
                 strlen(results[i].response) > 100 ? "..." : "",
                 results[i].image_url[0] ? " 🖼️" : "");
+            if (written < 0 || (size_t)written >= remaining) {
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
         }
     }
+
+mentionresponses_prefix_buffer_full:
 
     send_prefix_reply(client, msg->channel_id, resp);
 }

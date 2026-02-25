@@ -6,18 +6,31 @@
 
 #include "modules/http_client.h"
 #include <curl/curl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define INITIAL_BUF_SIZE 4096
+#define MAX_HTTP_RESPONSE_SIZE (10 * 1024 * 1024)  /* 10MB limit to prevent OOM attacks */
 
 static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t total = size * nmemb;
     http_response_t *resp = (http_response_t *)userp;
 
+    /* Check if response would exceed maximum size */
+    if (resp->size + total > MAX_HTTP_RESPONSE_SIZE) {
+        fprintf(stderr, "HTTP response exceeds maximum size limit (%d MB)\n",
+                MAX_HTTP_RESPONSE_SIZE / (1024 * 1024));
+        return 0;  /* Returning 0 signals error to libcurl */
+    }
+
     /* Grow buffer if needed */
     while (resp->size + total + 1 > resp->capacity) {
         size_t new_cap = resp->capacity * 2;
+        /* Cap at maximum response size */
+        if (new_cap > MAX_HTTP_RESPONSE_SIZE) {
+            new_cap = MAX_HTTP_RESPONSE_SIZE;
+        }
         char *new_data = realloc(resp->data, new_cap);
         if (!new_data) return 0;
         resp->data = new_data;
@@ -61,6 +74,10 @@ int http_get(const char *url, http_response_t *response) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "YunoGasai2-CBot/1.0");
+
+    /* Explicit TLS/SSL security settings */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);  /* Verify server certificate */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);  /* Verify hostname matches certificate */
 
     res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);

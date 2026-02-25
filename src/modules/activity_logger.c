@@ -282,11 +282,28 @@ void on_guild_member_update(struct discord *client, const struct discord_guild_m
     if (event->roles && event->roles->size > 0) {
         char desc[512];
         char *ptr = desc;
-        ptr += sprintf(ptr, "Roles updated: ");
+        size_t remaining = sizeof(desc);
+        int written;
+
+        written = snprintf(ptr, remaining, "Roles updated: ");
+        if (written < 0 || (size_t)written >= remaining) goto role_buffer_full;
+        ptr += written;
+        remaining -= written;
+
         for (int i = 0; i < event->roles->size && i < 10; i++) {
-            if (i > 0) ptr += sprintf(ptr, ", ");
-            ptr += sprintf(ptr, "<@&%lu>", (unsigned long)event->roles->array[i]);
+            if (i > 0) {
+                written = snprintf(ptr, remaining, ", ");
+                if (written < 0 || (size_t)written >= remaining) break;
+                ptr += written;
+                remaining -= written;
+            }
+            written = snprintf(ptr, remaining, "<@&%lu>", (unsigned long)event->roles->array[i]);
+            if (written < 0 || (size_t)written >= remaining) break;
+            ptr += written;
+            remaining -= written;
         }
+
+role_buffer_full:
 
         activity_logger_add(event->guild_id, event->user->id, 0,
                              "role_change", desc);

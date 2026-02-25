@@ -63,6 +63,12 @@ static user_message_history_t *find_user_entry(uint64_t user_id, uint64_t guild_
     int idx = g_filter.hash_table[bucket];
 
     while (idx >= 0) {
+        /* Bounds check before array access */
+        if (idx >= MAX_TRACKED_USERS) {
+            fprintf(stderr, "spam_filter: Invalid index %d in hash chain\n", idx);
+            return NULL;
+        }
+
         user_message_history_t *entry = &g_filter.users[idx];
         if (entry->in_use && entry->user_id == user_id && entry->guild_id == guild_id) {
             return entry;
@@ -79,6 +85,11 @@ static user_message_history_t *alloc_user_entry(uint64_t user_id, uint64_t guild
     if (g_filter.free_head >= 0) {
         /* Get from free list */
         idx = g_filter.free_head;
+        /* Bounds check */
+        if (idx >= MAX_TRACKED_USERS) {
+            fprintf(stderr, "spam_filter: Invalid free_head index %d\n", idx);
+            return NULL;
+        }
         g_filter.free_head = g_filter.users[idx].hash_next;
     } else {
         /* No free entries - evict oldest (LRU would be better but this is simpler) */
@@ -93,6 +104,12 @@ static user_message_history_t *alloc_user_entry(uint64_t user_id, uint64_t guild
 
                 int *prev = &g_filter.hash_table[old_bucket];
                 while (*prev >= 0) {
+                    /* Bounds check before using *prev as array index */
+                    if (*prev >= MAX_TRACKED_USERS) {
+                        fprintf(stderr, "spam_filter: Invalid index %d in eviction chain\n", *prev);
+                        break;
+                    }
+
                     if (*prev == idx) {
                         *prev = g_filter.users[idx].hash_next;
                         break;

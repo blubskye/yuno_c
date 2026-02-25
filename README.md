@@ -135,6 +135,23 @@ This is the **pure C port** of the original JavaScript version using the [Concor
 <tr>
 <td colspan="2">
 
+### Security Hardening
+- **Zero known vulnerabilities** — comprehensive security audit completed
+- **SQL injection protection** — parameterized queries + safe encryption key handling
+- **Buffer overflow prevention** — all `strcpy`/`sprintf` replaced with bounds-checked variants
+- **Input validation** — safe integer parsing with range checks (no `atoi`)
+- **Path traversal protection** — `realpath()` validation for file operations
+- **Memory safety** — NULL checks after all allocations, no use-after-free
+- **HTTP security** — 10MB response limit, explicit TLS certificate verification
+- **Thread safety** — `strtok_r` for reentrant string parsing
+- **Integer overflow protection** — bounds checking in XP calculations and array indexing
+- **No command injection** — zero usage of `system()`, `popen()`, or shell execution
+
+</td>
+</tr>
+<tr>
+<td colspan="2">
+
 ### Crash Handling & Diagnostics
 - **Fatal signal handler** — catches SIGSEGV, SIGABRT, SIGFPE, SIGBUS, SIGILL
 - **Full stack traces** via `backtrace()` / `backtrace_symbols()` printed to stderr

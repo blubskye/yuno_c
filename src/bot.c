@@ -100,12 +100,21 @@ void xp_batcher_flush(yuno_bot_t *bot) {
         int leveled_up = 0;
 
         /* Check for level up: needed = 5 * level^2 + 50 * level + 100 */
+        /* Sanity check to prevent integer overflow (max safe level ~60000 for int64) */
+        if (user_xp.level > 100000) {
+            user_xp.level = 100000;  /* Cap at reasonable maximum */
+        }
+
         int64_t needed = 5 * (int64_t)user_xp.level * user_xp.level
                        + 50 * user_xp.level + 100;
-        while (user_xp.xp >= needed) {
+        while (user_xp.xp >= needed && user_xp.level < 100000) {
             user_xp.xp -= needed;
             user_xp.level += 1;
             leveled_up = 1;
+
+            /* Check for potential overflow before calculation */
+            if (user_xp.level > 100000) break;
+
             needed = 5 * (int64_t)user_xp.level * user_xp.level
                    + 50 * user_xp.level + 100;
         }
@@ -765,6 +774,10 @@ void on_guild_member_add(struct discord *client, const struct discord_guild_memb
 
     /* Build welcome message and create DM channel asynchronously */
     welcome_dm_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        fprintf(stderr, "Failed to allocate memory for welcome DM context\n");
+        return;
+    }
     snprintf(ctx->welcome_msg, sizeof(ctx->welcome_msg),
         "**%s**\n\n%s\n\n💕 *— Yuno*",
         title, message);

@@ -21,9 +21,15 @@ int db_open(yuno_database_t *database, const char *path) {
     /* If compiled with SQLCipher support, apply encryption key */
     const char *db_key = getenv("YUNO_DB_KEY");
     if (db_key && db_key[0]) {
-        char key_sql[512];
-        snprintf(key_sql, sizeof(key_sql), "PRAGMA key = '%s'", db_key);
-        sqlite3_exec(database->db, key_sql, NULL, NULL, NULL);
+        /* Use native sqlite3_key() API to prevent SQL injection */
+        int key_result = sqlite3_key(database->db, db_key, (int)strlen(db_key));
+        if (key_result != SQLITE_OK) {
+            fprintf(stderr, "💔 Failed to set database encryption key: %s\n",
+                    sqlite3_errmsg(database->db));
+            sqlite3_close(database->db);
+            database->db = NULL;
+            return -1;
+        }
         printf("🔒 Database encryption enabled (SQLCipher)\n");
     }
 #endif

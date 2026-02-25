@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 
 /* Helper to get an option value from slash command args */
 static const char *get_option_value(const struct discord_interaction *interaction, const char *name) {
@@ -739,12 +740,23 @@ static int import_bans_from_file(struct discord *client, u64snowflake guild_id, 
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    /* Check for ftell error (negative) and size limits */
+    if (fsize < 0) {
+        fclose(f);
+        return -1;
+    }
     if (fsize <= 2 || fsize > 10 * 1024 * 1024) {
         fclose(f);
         return -1;
     }
 
-    char *buf = malloc(fsize + 1);
+    /* Check for overflow in malloc size calculation */
+    if (fsize >= LONG_MAX) {
+        fclose(f);
+        return -1;
+    }
+
+    char *buf = malloc((size_t)fsize + 1);
     if (!buf) { fclose(f); return -1; }
     fread(buf, 1, fsize, f);
     buf[fsize] = '\0';
@@ -963,8 +975,9 @@ void cmd_set_banimage_prefix(struct discord *client, const struct discord_messag
     strncpy(args_buf, args, sizeof(args_buf) - 1);
     args_buf[sizeof(args_buf) - 1] = '\0';
 
-    char *user_str = strtok(args_buf, " ");
-    char *url = strtok(NULL, " ");
+    char *saveptr;
+    char *user_str = strtok_r(args_buf, " ", &saveptr);
+    char *url = strtok_r(NULL, " ", &saveptr);
 
     if (!user_str || !url) {
         struct discord_create_message p = { .content = "Usage: set-banimage <user> <url>" };
@@ -1083,18 +1096,36 @@ void cmd_spamrules(struct discord *client, const struct discord_interaction *int
 
     char resp[2048];
     char *ptr = resp;
-    ptr += sprintf(ptr, "🛡️ **Custom Spam Rules** (%d total)\n\n", count);
+    size_t remaining = sizeof(resp);
+    int written;
+
+    written = snprintf(ptr, remaining, "🛡️ **Custom Spam Rules** (%d total)\n\n", count);
+    if (written < 0 || (size_t)written >= remaining) goto buffer_full;
+    ptr += written;
+    remaining -= written;
 
     if (count == 0) {
-        ptr += sprintf(ptr, "No custom spam rules configured~");
+        written = snprintf(ptr, remaining, "No custom spam rules configured~");
+        if (written < 0 || (size_t)written >= remaining) goto buffer_full;
+        ptr += written;
+        remaining -= written;
     } else {
-        for (int i = 0; i < count && (ptr - resp) < 1800; i++) {
+        for (int i = 0; i < count; i++) {
             const char *act = (rules[i].action >= 0 && rules[i].action < 4) ? action_names[rules[i].action] : "warn";
-            ptr += sprintf(ptr, "**#%ld** `%s` → **%s** %s\n",
+            written = snprintf(ptr, remaining, "**#%ld** `%s` → **%s** %s\n",
                 (long)rules[i].id, rules[i].pattern, act,
                 rules[i].enabled ? "✅" : "❌");
+            if (written < 0 || (size_t)written >= remaining) {
+                /* Buffer full - truncate gracefully */
+                snprintf(ptr, remaining, "\n... (%d more)", count - i);
+                break;
+            }
+            ptr += written;
+            remaining -= written;
         }
     }
+
+buffer_full:
 
     struct discord_interaction_response r = {
         .type = DISCORD_INTERACTION_CHANNEL_MESSAGE_WITH_SOURCE,
@@ -1120,8 +1151,9 @@ void cmd_add_spamrule_prefix(struct discord *client, const struct discord_messag
     strncpy(args_buf, args, sizeof(args_buf) - 1);
     args_buf[sizeof(args_buf) - 1] = '\0';
 
-    char *pattern = strtok(args_buf, " ");
-    char *action_str = strtok(NULL, " ");
+    char *saveptr;
+    char *pattern = strtok_r(args_buf, " ", &saveptr);
+    char *action_str = strtok_r(NULL, " ", &saveptr);
 
     int action = 0;
     if (action_str) {

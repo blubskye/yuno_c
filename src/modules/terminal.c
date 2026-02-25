@@ -13,6 +13,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <json-c/json.h>
 #include <errno.h>
 
@@ -125,8 +127,9 @@ void terminal_cmd_botban(const char *args) {
     }
 
     char *args_copy = strdup(args);
-    char *user_str = strtok(args_copy, " ");
-    char *reason = strtok(NULL, "");
+    char *saveptr;
+    char *user_str = strtok_r(args_copy, " ", &saveptr);
+    char *reason = strtok_r(NULL, "", &saveptr);
 
     uint64_t user_id = strtoull(user_str, NULL, 10);
     if (user_id == 0) {
@@ -378,8 +381,9 @@ void terminal_cmd_watch(const char *args) {
     strncpy(args_buf, args, sizeof(args_buf) - 1);
     args_buf[sizeof(args_buf) - 1] = '\0';
 
-    char *first = strtok(args_buf, " ");
-    char *second = strtok(NULL, " ");
+    char *saveptr;
+    char *first = strtok_r(args_buf, " ", &saveptr);
+    char *second = strtok_r(NULL, " ", &saveptr);
 
     /* Handle "stop" subcommand */
     if (strcmp(first, "stop") == 0) {
@@ -477,8 +481,9 @@ void terminal_cmd_texportbans(const char *args) {
     strncpy(args_buf, args, sizeof(args_buf) - 1);
     args_buf[sizeof(args_buf) - 1] = '\0';
 
-    char *guild_str = strtok(args_buf, " ");
-    char *output_file = strtok(NULL, " ");
+    char *saveptr;
+    char *guild_str = strtok_r(args_buf, " ", &saveptr);
+    char *output_file = strtok_r(NULL, " ", &saveptr);
 
     uint64_t guild_id = strtoull(guild_str, NULL, 10);
     if (guild_id == 0) {
@@ -494,9 +499,50 @@ void terminal_cmd_texportbans(const char *args) {
         output_file = default_path;
     }
 
-    /* Security: prevent path traversal */
-    if (strstr(output_file, "..")) {
-        printf("❌ Invalid file path (path traversal not allowed)\n");
+    /* Security: prevent path traversal with realpath validation */
+    char resolved_path[PATH_MAX];
+    char allowed_dir[PATH_MAX];
+
+    /* Get the absolute path of the allowed data directory */
+    if (realpath("./data", allowed_dir) == NULL) {
+        /* If ./data doesn't exist, try to create it first */
+        if (mkdir("./data", 0755) != 0 && errno != EEXIST) {
+            printf("❌ Failed to access data directory: %s\n", strerror(errno));
+            return;
+        }
+        /* Try realpath again after creation */
+        if (realpath("./data", allowed_dir) == NULL) {
+            printf("❌ Failed to resolve data directory path: %s\n", strerror(errno));
+            return;
+        }
+    }
+
+    /* Resolve the output file path (may not exist yet, so check parent dir) */
+    char output_dir[PATH_MAX];
+    strncpy(output_dir, output_file, sizeof(output_dir) - 1);
+    output_dir[sizeof(output_dir) - 1] = '\0';
+
+    /* Get directory part of the path */
+    char *last_slash = strrchr(output_dir, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+        /* Resolve parent directory */
+        if (realpath(output_dir, resolved_path) == NULL) {
+            printf("❌ Invalid file path (directory doesn't exist or not accessible)\n");
+            return;
+        }
+    } else {
+        /* No directory specified, use current directory */
+        if (realpath(".", resolved_path) == NULL) {
+            printf("❌ Failed to resolve current directory\n");
+            return;
+        }
+    }
+
+    /* Verify resolved path is within allowed directory */
+    size_t allowed_len = strlen(allowed_dir);
+    if (strncmp(resolved_path, allowed_dir, allowed_len) != 0) {
+        printf("❌ Invalid file path (must be within ./data directory)\n");
         return;
     }
 
@@ -558,8 +604,9 @@ void terminal_cmd_timportbans(const char *args) {
     strncpy(args_buf, args, sizeof(args_buf) - 1);
     args_buf[sizeof(args_buf) - 1] = '\0';
 
-    char *guild_str = strtok(args_buf, " ");
-    char *file_path = strtok(NULL, " ");
+    char *saveptr;
+    char *guild_str = strtok_r(args_buf, " ", &saveptr);
+    char *file_path = strtok_r(NULL, " ", &saveptr);
 
     if (!guild_str || !file_path) {
         printf("❌ Usage: timportbans <guild-id> <file-path>\n");
@@ -731,7 +778,11 @@ void terminal_cmd_autoupdate(void) {
     char output[1024] = "";
     char line[256];
     while (fgets(line, sizeof(line), fp)) {
-        strncat(output, line, sizeof(output) - strlen(output) - 1);
+        size_t current_len = strlen(output);
+        size_t remaining = sizeof(output) - current_len - 1;
+        if (remaining > 0) {
+            strncat(output, line, remaining);
+        }
     }
     int status = pclose(fp);
 
@@ -751,7 +802,11 @@ void terminal_cmd_autoupdate(void) {
     char updates[2048] = "";
     while (fgets(line, sizeof(line), fp)) {
         has_updates++;
-        strncat(updates, line, sizeof(updates) - strlen(updates) - 1);
+        size_t current_len = strlen(updates);
+        size_t remaining = sizeof(updates) - current_len - 1;
+        if (remaining > 0) {
+            strncat(updates, line, remaining);
+        }
     }
     pclose(fp);
 
@@ -787,8 +842,9 @@ static void *terminal_loop(void *arg) {
         if (strlen(line) == 0) continue;
 
         /* Parse command */
-        char *cmd = strtok(line, " ");
-        char *args = strtok(NULL, "");
+        char *saveptr;
+        char *cmd = strtok_r(line, " ", &saveptr);
+        char *args = strtok_r(NULL, "", &saveptr);
 
         if (strcmp(cmd, "help") == 0) {
             terminal_cmd_help();
