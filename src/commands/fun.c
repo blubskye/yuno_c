@@ -324,8 +324,11 @@ static void truncate_text(const char *src, char *dst, size_t max_len) {
         if (max_len >= 3) {
             strncpy(dst, src, max_len - 3);
             dst[max_len - 3] = '\0';
-            /* Safe concatenation - we know there's space */
-            strncat(dst, "...", 3);
+            /* Append ellipsis — we know exactly 3 bytes of space remain */
+            dst[max_len - 3] = '.';
+            dst[max_len - 2] = '.';
+            dst[max_len - 1] = '.';
+            dst[max_len]     = '\0';
         } else {
             /* Not enough space for ellipsis */
             strncpy(dst, src, max_len);
@@ -456,7 +459,7 @@ void cmd_anime(struct discord *client, const struct discord_interaction *interac
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
-        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        fun_send_interaction(client, interaction, "Memory allocation failed~");
         return;
     }
     ctx->client = client;
@@ -583,7 +586,7 @@ void cmd_manga(struct discord *client, const struct discord_interaction *interac
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
-        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        fun_send_interaction(client, interaction, "Memory allocation failed~");
         return;
     }
     ctx->client = client;
@@ -658,7 +661,7 @@ void cmd_neko(struct discord *client, const struct discord_interaction *interact
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
-        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        fun_send_interaction(client, interaction, "Memory allocation failed~");
         return;
     }
     ctx->client = client;
@@ -768,7 +771,7 @@ void cmd_urban(struct discord *client, const struct discord_interaction *interac
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
-        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        fun_send_interaction(client, interaction, "Memory allocation failed~");
         return;
     }
     ctx->client = client;
@@ -902,7 +905,7 @@ void cmd_hentai(struct discord *client, const struct discord_interaction *intera
 
     fun_worker_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
-        fun_send_interaction_reply(client, interaction, "Memory allocation failed~");
+        fun_send_interaction(client, interaction, "Memory allocation failed~");
         return;
     }
     ctx->client = client;

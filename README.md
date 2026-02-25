@@ -220,12 +220,12 @@ cmake --build build
 
 **Optional: Build with sanitizers (for development/debugging):**
 ```bash
-# AddressSanitizer (memory errors, leaks)
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSANITIZE_ADDRESS=ON -DSANITIZE_UNDEFINED=ON
+# AddressSanitizer (memory errors, leaks) + UBSan
+cmake -B build -DSANITIZE_ADDRESS=ON -DSANITIZE_UNDEFINED=ON
 cmake --build build
 
 # ThreadSanitizer (data races)
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSANITIZE_THREAD=ON
+cmake -B build -DSANITIZE_THREAD=ON
 cmake --build build
 ```
 
@@ -248,12 +248,12 @@ Build sizes across optimization levels (GCC 15.2, x86_64 Linux):
 
 | Variant | Raw | Stripped | UPX --best |
 |---------|-----|----------|------------|
-| `-O2` | 972 KiB | 865 KiB | 256 KiB |
-| `-O2 -flto` | 985 KiB | 877 KiB | 258 KiB |
-| `-O3` | 987 KiB | 881 KiB | 262 KiB |
-| `-O3 -flto` | 1004 KiB | 897 KiB | 265 KiB |
-| `-Os` | 937 KiB | 829 KiB | 245 KiB |
-| `-Os -flto` | 937 KiB | 829 KiB | 246 KiB |
+| `-O2` | 980 KiB | 873 KiB | 259 KiB |
+| `-O2 -flto` | 989 KiB | 881 KiB | 260 KiB |
+| `-O3` | 1000 KiB | 893 KiB | 264 KiB |
+| `-O3 -flto` | 1008 KiB | 901 KiB | 268 KiB |
+| `-Os` | 937 KiB | 829 KiB | 246 KiB |
+| `-Os -flto` | 937 KiB | 829 KiB | 247 KiB |
 
 **Notes:**
 - **`-Os`** produces the smallest binary at every stage — 245 KiB with UPX
